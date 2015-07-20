@@ -1,0 +1,6 @@
+/.lock-*
+/build
+/.waf*
+/doxygen.pyc
+/docs/html
+/docs/latex

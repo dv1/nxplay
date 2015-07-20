@@ -1,0 +1,25 @@
+#!/usr/bin/env python
+
+
+def configure(conf):
+	from waflib.Build import Logs
+	if conf.check_cc(mandatory = 0, header_name = 'histedit.h', uselib_store = 'LIBEDIT') and \
+	   conf.check_cc(mandatory = 0, lib = 'edit', uselib_store = 'LIBEDIT'):
+		Logs.pprint('GREEN', 'libedit found - building interactive command-line player')
+		conf.env['BUILD_CMDLINE_PLAYER'] = True
+	else:
+		Logs.pprint('YELLOW', 'libedit not found - not building interactive command-line player')
+
+
+def build(bld):
+	if bld.env['BUILD_CMDLINE_PLAYER']:
+		bld(
+			features = ['cxx', 'cxxprogram'],
+			includes = ['.', '..'],
+			uselib = ['GSTREAMER', 'LIBEDIT'],
+			use = 'nxplay',
+			target = 'cmdline-player',
+			source = ['cmdline-player.cpp', 'tokenizer.cpp'],
+			install_path = False # do not install the example command line player
+		)
+
