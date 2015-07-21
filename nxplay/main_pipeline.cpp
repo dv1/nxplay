@@ -261,8 +261,6 @@ void main_pipeline::stream::static_new_pad_callback(GstElement *, GstPad *p_pad,
 {
 	stream *self = static_cast < stream* > (p_data);
 
-	std::unique_lock < std::mutex > lock(self->m_pipeline.m_mutex);
-
 	NXPLAY_LOG_MSG(debug, "linking new decodebin pad, stream: " << guintptr(self));
 
 	// only link once
