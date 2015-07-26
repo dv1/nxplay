@@ -189,24 +189,35 @@ main_pipeline::stream::~stream()
 
 	NXPLAY_LOG_MSG(debug, "destroying stream " << guintptr(this));
 
+	// Release the request pad first. Releasing must be done before the
+	// element states are set to NULL, to give concat the chance to
+	// wake up all streaming threads from sink pads which are currently
+	// waiting. Then, concat deactivates the sinkpad. A deactivated
+	// sinkpad will cause gst_pad_push() calls to return GST_FLOW_FLUSHING,
+	// which does not constitute an error. Therefore, releasing here is OK
+	// even if the elements' are currently set to PLAYING.
+	// Releasing *below* the state switch to NULL would potentially cause
+	// deadlocks.
+	if (m_concat_sinkpad != nullptr)
+		gst_element_release_request_pad(m_concat_elem, m_concat_sinkpad);
+
 	// The states of the elements are locked before the element states
 	// are set to NULL. This prevents race conditions where the pipeline is
 	// switching to another state (for example, PLAYING) while this stream
 	// is being destroyed. If the state weren't locked, the pipeline's switch
 	// would propagate to the element.
-
-	gst_element_set_locked_state(m_identity_elem, TRUE);
 	gst_element_set_locked_state(m_uridecodebin_elem, TRUE);
+	gst_element_set_locked_state(m_identity_elem, TRUE);
 
-	gst_element_set_state(m_identity_elem, GST_STATE_NULL);
+	// Shut down the elements
 	gst_element_set_state(m_uridecodebin_elem, GST_STATE_NULL);
+	gst_element_set_state(m_identity_elem, GST_STATE_NULL);
 
 	// Unlink identity and concat
 	if (m_concat_sinkpad != nullptr)
 	{
 		gst_pad_unlink(m_identity_srcpad, m_concat_sinkpad);
 		gst_object_unref(GST_OBJECT(m_identity_srcpad));
-		gst_element_release_request_pad(m_concat_elem, m_concat_sinkpad);
 		gst_object_unref(GST_OBJECT(m_concat_sinkpad));
 	}
 
