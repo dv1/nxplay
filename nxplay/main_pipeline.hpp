@@ -100,10 +100,11 @@ public:
 	/// Notifies about newly seen tags.
 	/**
 	 * @param p_current_media Const reference to internal new current media
+	 * @param p_token Associated playback token (see pipeline::play_media() )
 	 * @param p_tag_list tag_list object containing the new tags. It is a
 	 *                   temporary value which can be moved.
 	 */
-	typedef std::function < void(media const &p_current_media, tag_list &&p_tag_list) > new_tags_callback;
+	typedef std::function < void(media const &p_current_media, guint64 const p_token, tag_list &&p_tag_list) > new_tags_callback;
 	/// Notifies about state changes.
 	/**
 	 * If p_new_state is a transitional state, some kind of wait indicator should be
@@ -136,11 +137,12 @@ public:
 	 * known. The user interface then should indicate that.
 	 *
 	 * @param p_current_media Const reference to internal new current media
+	 * @param p_token Associated playback token (see pipeline::play_media() )
 	 * @param p_new_duration New duration value, or -1 if no duration is known in the given units
 	 * @þaram p_unit Units for the given duration value
 	 */
-	typedef std::function < void(media const &p_current_media, gint64 const p_new_duration, position_units const p_unit) > duration_updated_callback;
-	/// Notifies if current media is seekable or not
+	typedef std::function < void(media const &p_current_media, guint64 const p_token, gint64 const p_new_duration, position_units const p_unit) > duration_updated_callback;
+	/// Notifies about additional information about media
 	/**
 	 * If this callback is not invoked, media can be assumed to be seekable.
 	 *
@@ -161,10 +163,11 @@ public:
 	 * the main_pipeline constructor.
 	 *
 	 * @param p_current_media Const reference to internal new current media
+	 * @param p_token Associated playback token (see pipeline::play_media() )
 	 * @param p_new_duration New position value
 	 * @þaram p_unit Units for the given duration value
 	 */
-	typedef std::function < void(media const &p_current_media, gint64 const p_new_position, position_units const p_unit) > position_updated_callback;
+	typedef std::function < void(media const &p_current_media, guint64 const p_token, gint64 const p_new_position, position_units const p_unit) > position_updated_callback;
 	/// Notifies that the current media is about to end.
 	/**
 	 * This is called a short while before the current media ends. This short

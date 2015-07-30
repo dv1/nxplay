@@ -1006,13 +1006,13 @@ void main_pipeline::update_durations_nolock()
 		if (duration_in_nanoseconds_updated)
 		{
 			m_duration_in_nanoseconds = new_duration_in_nanoseconds;
-			m_callbacks.m_duration_updated_callback(m_current_stream->get_media(), new_duration_in_nanoseconds, position_unit_nanoseconds);
+			m_callbacks.m_duration_updated_callback(m_current_stream->get_media(), m_current_stream->get_token(), new_duration_in_nanoseconds, position_unit_nanoseconds);
 		}
 
 		if (duration_in_bytes_updated)
 		{
 			m_duration_in_bytes = new_duration_in_bytes;
-			m_callbacks.m_duration_updated_callback(m_current_stream->get_media(), new_duration_in_bytes, position_unit_bytes);
+			m_callbacks.m_duration_updated_callback(m_current_stream->get_media(), m_current_stream->get_token(), new_duration_in_bytes, position_unit_bytes);
 		}
 	}
 
@@ -1125,7 +1125,7 @@ gboolean main_pipeline::static_timeout_cb(gpointer p_data)
 		{
 			// Notify about the new position if the callback is set
 			if (self->m_callbacks.m_position_updated_callback)
-				self->m_callbacks.m_position_updated_callback(self->m_current_stream->get_media(), position, position_unit_nanoseconds);
+				self->m_callbacks.m_position_updated_callback(self->m_current_stream->get_media(), self->m_current_stream->get_token(), position, position_unit_nanoseconds);
 
 			// If the current position is close enough to the duration,
 			// and if a media_about_to_end callback is set, and if the callback
@@ -1293,7 +1293,7 @@ gboolean main_pipeline::static_bus_watch(GstBus *, GstMessage *p_msg, gpointer p
 
 			// Only toplevel pipeline state change messages are of interest here
 			// (internal element state changes are ignored)
-			if (GST_MESSAGE_SRC(p_msg) != GST_OBJECT(self->m_pipeline_elem))
+			if (GST_MESSAGE_SRC(p_msg) != GST_OBJECT_CAST(self->m_pipeline_elem))
 				break;
 
 			// In rare cases, a NULL pending state has been observed. This seems to
@@ -1501,7 +1501,7 @@ gboolean main_pipeline::static_bus_watch(GstBus *, GstMessage *p_msg, gpointer p
 				gst_message_parse_tag(p_msg, &tag_list_);
 
 				tag_list list(tag_list_);
-				self->m_callbacks.m_new_tags_callback(self->m_current_stream->get_media(), std::move(list));
+				self->m_callbacks.m_new_tags_callback(self->m_current_stream->get_media(), self->m_current_stream->get_token(), std::move(list));
 			}
 
 			break;

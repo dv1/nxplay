@@ -123,27 +123,27 @@ int main(int argc, char *argv[])
 		{
 			std::cerr << "Buffering: " << p_percentage << "  media uri: " << p_media.get_uri() << " token: " << p_token << "  current: " << p_is_current_media << "\n";
 		};
-		callbacks.m_duration_updated_callback = [](nxplay::media const &p_current_media, gint64 const p_new_duration, nxplay::position_units const p_unit)
+		callbacks.m_duration_updated_callback = [](nxplay::media const &p_current_media, guint64 const p_token, gint64 const p_new_duration, nxplay::position_units const p_unit)
 		{
 			switch (p_unit)
 			{
 				case nxplay::position_unit_nanoseconds:
-					std::cerr << "Current duration for media with URI " << p_current_media.get_uri() << " in ms: " << (p_new_duration / GST_MSECOND) << "\n";
+					std::cerr << "Current duration for media with URI " << p_current_media.get_uri() << " and token " << p_token << " in ms: " << (p_new_duration / GST_MSECOND) << "\n";
 					break;
 				case nxplay::position_unit_bytes:
-					std::cerr << "Current duration for media with URI " << p_current_media.get_uri() << " in bytes: " << p_new_duration << "\n";
+					std::cerr << "Current duration for media with URI " << p_current_media.get_uri() << " and token " << p_token << " in bytes: " << p_new_duration << "\n";
 					break;
 			}
 		};
-		callbacks.m_position_updated_callback = [](nxplay::media const &p_current_media, gint64 const p_new_position, nxplay::position_units const p_unit)
+		callbacks.m_position_updated_callback = [](nxplay::media const &p_current_media, guint64 const p_token, gint64 const p_new_position, nxplay::position_units const p_unit)
 		{
 			switch (p_unit)
 			{
 				case nxplay::position_unit_nanoseconds:
-					std::cerr << "Current position for media with URI " << p_current_media.get_uri() << " in ms: " << (p_new_position / GST_MSECOND) << "\n";
+					std::cerr << "Current position for media with URI " << p_current_media.get_uri() << " and token " << p_token << " in ms: " << (p_new_position / GST_MSECOND) << "\n";
 					break;
 				case nxplay::position_unit_bytes:
-					std::cerr << "Current position for media with URI " << p_current_media.get_uri() << " in bytes: " << p_new_position << "\n";
+					std::cerr << "Current position for media with URI " << p_current_media.get_uri() << " and token " << p_token << " in bytes: " << p_new_position << "\n";
 					break;
 			}
 		};
@@ -163,9 +163,9 @@ int main(int argc, char *argv[])
 		{
 			std::cerr << "Error message: " << p_error_message << "\n";
 		};
-		callbacks.m_new_tags_callback = [](nxplay::media const &p_current_media, nxplay::tag_list const &p_tag_list)
+		callbacks.m_new_tags_callback = [](nxplay::media const &p_current_media, guint64 const p_token, nxplay::tag_list const &p_tag_list)
 		{
-			std::cerr << "New tags for current media with URI " << p_current_media.get_uri() << ": " << nxplay::to_string(p_tag_list) << "\n";
+			std::cerr << "New tags for current media with URI " << p_current_media.get_uri() << " and token " << p_token << ": " << nxplay::to_string(p_tag_list) << "\n";
 		};
 
 		nxplay::main_pipeline pipeline(callbacks);
