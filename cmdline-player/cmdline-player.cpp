@@ -163,6 +163,10 @@ int main(int argc, char *argv[])
 		{
 			std::cerr << "Error message: " << p_error_message << "\n";
 		};
+		callbacks.m_new_tags_callback = [](nxplay::tag_list const &p_tag_list)
+		{
+			std::cerr << "New tags: " << nxplay::to_string(p_tag_list) << "\n";
+		};
 
 		nxplay::main_pipeline pipeline(callbacks);
 
