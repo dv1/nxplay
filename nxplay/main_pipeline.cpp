@@ -979,8 +979,14 @@ void main_pipeline::set_paused_nolock(bool const p_paused)
 
 void main_pipeline::set_current_position_nolock(gint64 const p_new_position, position_units const p_unit)
 {
-	if ((m_pipeline_elem == nullptr) || (m_state == state_idle))
+	if ((m_pipeline_elem == nullptr) || (m_state == state_idle) || (m_current_stream == nullptr))
 		return;
+
+	if (!(m_current_stream->is_seekable()))
+	{
+		NXPLAY_LOG_MSG(info, "current stream is not seekable, cannot seek");
+		return;
+	}
 
 	// Pipeline is transitioning; postpone the call
 	if (is_transitioning_nolock())
