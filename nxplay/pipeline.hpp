@@ -210,14 +210,6 @@ public:
 	 *        it initiates a state change to state_playing (see above for exceptions to this rule)
 	 */
 	virtual void set_paused(bool const p_paused) = 0;
-	/// Returns true if the pipeline is currently paused.
-	/**
-	 * Just like set_paused(), this call only makes sense in the paused or playing states.
-	 * In other states, its return value is undefined.
-	 *
-	 * @return true if the pipeline is currently paused
-	 */
-	virtual bool is_paused() const = 0;
 
 	/// Returns true if the  pipeline is currently in a transitioning state.
 	/**

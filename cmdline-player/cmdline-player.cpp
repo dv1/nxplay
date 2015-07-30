@@ -194,7 +194,7 @@ int main(int argc, char *argv[])
 		{
 			[&](cmdline_player::tokens const &)
 			{
-				std::cerr << "Is currently paused: " << (pipeline.is_paused() ? "yes" : "no") << "\n";
+				std::cerr << "Is currently paused: " << ((pipeline.get_current_state() == nxplay::state_paused) ? "yes" : "no") << "\n";
 				return true;
 			},
 			0, "",

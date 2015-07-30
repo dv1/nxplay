@@ -223,7 +223,6 @@ public:
 	virtual void stop() override;
 
 	virtual void set_paused(bool const p_paused) override;
-	virtual bool is_paused() const override;
 
 	virtual bool is_transitioning() const override;
 

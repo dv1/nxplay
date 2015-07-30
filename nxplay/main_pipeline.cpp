@@ -366,13 +366,6 @@ void main_pipeline::set_paused(bool const p_paused)
 }
 
 
-bool main_pipeline::is_paused() const
-{
-	std::unique_lock < std::mutex > lock(m_mutex);
-	return m_state == state_paused;
-}
-
-
 bool main_pipeline::is_transitioning() const
 {
 	std::unique_lock < std::mutex > lock(m_mutex);
