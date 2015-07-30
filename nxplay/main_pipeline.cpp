@@ -302,6 +302,7 @@ main_pipeline::main_pipeline(callbacks const &p_callbacks, GstClockTime const p_
 	, m_duration_in_bytes(-1)
 	, m_update_tags_in_interval(p_update_tags_in_interval)
 	, m_block_abouttoend_notifications(false)
+	, m_force_next_duration_update(true)
 	, m_timeout_source(nullptr)
 	, m_needs_next_media_time(p_needs_next_media_time)
 	, m_update_interval(p_update_interval)
@@ -790,6 +791,7 @@ void main_pipeline::set_initial_state_values_nolock()
 	m_duration_in_nanoseconds = -1;
 	m_duration_in_bytes = -1;
 	m_block_abouttoend_notifications = false;
+	m_force_next_duration_update = true;
 }
 
 
@@ -979,13 +981,14 @@ gint64 main_pipeline::query_duration_nolock(position_units const p_unit) const
 void main_pipeline::update_durations_nolock()
 {
 	// Always check durations in both bytes and nanoseconds, but only
-	// notify if the duration actually changed
+	// notify if the duration actually changed (or if an update is forced
+	// by m_force_next_duration_update)
 
 	gint64 new_duration_in_nanoseconds = query_duration_nolock(position_unit_nanoseconds);
 	gint64 new_duration_in_bytes       = query_duration_nolock(position_unit_bytes);
 
-	bool duration_in_nanoseconds_updated = (new_duration_in_nanoseconds != m_duration_in_nanoseconds);
-	bool duration_in_bytes_updated       = (new_duration_in_bytes != m_duration_in_bytes);
+	bool duration_in_nanoseconds_updated = m_force_next_duration_update || (new_duration_in_nanoseconds != m_duration_in_nanoseconds);
+	bool duration_in_bytes_updated       = m_force_next_duration_update || (new_duration_in_bytes != m_duration_in_bytes);
 
 	NXPLAY_LOG_MSG(
 		debug,
@@ -1012,6 +1015,9 @@ void main_pipeline::update_durations_nolock()
 			m_callbacks.m_duration_updated_callback(m_current_stream->get_media(), new_duration_in_bytes, position_unit_bytes);
 		}
 	}
+
+	// Forced updates are supposed to be a one-shot action; reset the flag
+	m_force_next_duration_update = false;
 }
 
 
@@ -1216,7 +1222,9 @@ gboolean main_pipeline::static_bus_watch(GstBus *, GstMessage *p_msg, gpointer p
 			if (self->m_current_stream)
 			{
 				// Update durations. With some media, it is necessary
-				// to do this here.
+				// to do this here. Force it in case no further
+				// duration updates will ever happen.
+				self->m_force_next_duration_update = true;
 				self->update_durations_nolock();
 
 				NXPLAY_LOG_MSG(debug, "media with URI " << self->m_current_stream->get_media().get_uri() << " started to play");

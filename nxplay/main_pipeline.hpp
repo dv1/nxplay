@@ -362,6 +362,7 @@ private:
 	gint64 m_duration_in_nanoseconds, m_duration_in_bytes;
 	bool m_update_tags_in_interval;
 	bool m_block_abouttoend_notifications;
+	bool m_force_next_duration_update;
 
 
 	// playback timer
