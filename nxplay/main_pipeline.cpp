@@ -997,18 +997,19 @@ void main_pipeline::update_durations_nolock()
 		"  bytes: " << new_duration_in_bytes
 	);
 
-	if (m_callbacks.m_duration_updated_callback)
+	/* do duration updates if there is a current stream and a callback */
+	if (m_callbacks.m_duration_updated_callback && (m_current_stream != nullptr))
 	{
 		if (duration_in_nanoseconds_updated)
 		{
 			m_duration_in_nanoseconds = new_duration_in_nanoseconds;
-			m_callbacks.m_duration_updated_callback(new_duration_in_nanoseconds, position_unit_nanoseconds);
+			m_callbacks.m_duration_updated_callback(m_current_stream->get_media(), new_duration_in_nanoseconds, position_unit_nanoseconds);
 		}
 
 		if (duration_in_bytes_updated)
 		{
 			m_duration_in_bytes = new_duration_in_bytes;
-			m_callbacks.m_duration_updated_callback(new_duration_in_bytes, position_unit_bytes);
+			m_callbacks.m_duration_updated_callback(m_current_stream->get_media(), new_duration_in_bytes, position_unit_bytes);
 		}
 	}
 }
@@ -1108,9 +1109,9 @@ gboolean main_pipeline::static_timeout_cb(gpointer p_data)
 	// for the entire lifetime of the loop)
 	std::unique_lock < std::mutex > lock(self->m_mutex);
 
-	// Do updates if there is a pipeline, pipeline is playing, and there is
-	// either a position_updated or media_about_to_end callback.
-	if ((self->m_pipeline_elem != nullptr) && (self->m_state == state_playing) && (self->m_callbacks.m_position_updated_callback || self->m_callbacks.m_media_about_to_end_callback))
+	// Do updates if there is a pipeline, pipeline is playing, there is a current
+	// stream, and there is either a position_updated or media_about_to_end callback.
+	if ((self->m_pipeline_elem != nullptr) && (self->m_state == state_playing) != (self->m_current_stream != nullptr) && (self->m_callbacks.m_position_updated_callback || self->m_callbacks.m_media_about_to_end_callback))
 	{
 		// TODO: also do BYTES queries?
         	gint64 position;
@@ -1118,7 +1119,7 @@ gboolean main_pipeline::static_timeout_cb(gpointer p_data)
 		{
 			// Notify about the new position if the callback is set
 			if (self->m_callbacks.m_position_updated_callback)
-				self->m_callbacks.m_position_updated_callback(position, position_unit_nanoseconds);
+				self->m_callbacks.m_position_updated_callback(self->m_current_stream->get_media(), position, position_unit_nanoseconds);
 
 			// If the current position is close enough to the duration,
 			// and if a media_about_to_end callback is set, and if the callback
@@ -1482,6 +1483,8 @@ gboolean main_pipeline::static_bus_watch(GstBus *, GstMessage *p_msg, gpointer p
 
 		case GST_MESSAGE_TAG:
 		{
+			std::unique_lock < std::mutex > lock(self->m_mutex);
+
 			if (self->m_callbacks.m_new_tags_callback)
 			{
 				NXPLAY_LOG_MSG(debug, "new tags reported by " << GST_MESSAGE_SRC_NAME(p_msg));
@@ -1490,7 +1493,7 @@ gboolean main_pipeline::static_bus_watch(GstBus *, GstMessage *p_msg, gpointer p
 				gst_message_parse_tag(p_msg, &tag_list_);
 
 				tag_list list(tag_list_);
-				self->m_callbacks.m_new_tags_callback(std::move(list));
+				self->m_callbacks.m_new_tags_callback(self->m_current_stream->get_media(), std::move(list));
 			}
 
 			break;
