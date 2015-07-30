@@ -163,6 +163,10 @@ int main(int argc, char *argv[])
 		{
 			std::cerr << "Error message: " << p_error_message << "\n";
 		};
+		callbacks.m_media_information_callback = [](nxplay::media const &p_media, guint64 const p_token, bool const p_is_current_media, bool const p_is_seekable, bool const p_is_live)
+		{
+			std::cerr << "New information about " << (p_is_current_media ? "current" : "next") << " media with URI " << p_media.get_uri() << " and token " << p_token << ": is seekable: " << p_is_seekable << ": is live: " << p_is_live << "\n";
+		};
 		callbacks.m_new_tags_callback = [](nxplay::media const &p_current_media, guint64 const p_token, nxplay::tag_list const &p_tag_list)
 		{
 			std::cerr << "New tags for current media with URI " << p_current_media.get_uri() << " and token " << p_token << ": " << nxplay::to_string(p_tag_list) << "\n";

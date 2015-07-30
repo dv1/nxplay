@@ -200,7 +200,8 @@ public:
 	 * This call is only meaningful if the pipeline is either in the playing or paused state
 	 * or is transitioning to one of these two states. Otherwise, it is ignored. If the
 	 * pipeline is already paused, and p_paused is true, the call is ignored. Same if
-	 * the pipeline is playing, and p_paused is false.
+	 * the pipeline is playing, and p_paused is false. If the current media is a live media,
+	 * it is ignored as well.
 	 *
 	 * In the special transitioning case described earlier where the pipeline is transitioning
 	 * to either the paused or the playing state, this call is postponed, and executed

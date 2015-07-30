@@ -128,6 +128,8 @@ main_pipeline::stream::stream(main_pipeline &p_pipeline, guint64 const p_token, 
 	, m_concat_sinkpad(nullptr)
 	, m_container_bin(p_container_bin)
 	, m_is_buffering(false)
+	, m_is_live(false)
+	, m_is_seekable(false)
 {
 	assert(m_container_bin != nullptr);
 
@@ -173,9 +175,10 @@ main_pipeline::stream::stream(main_pipeline &p_pipeline, guint64 const p_token, 
 	g_object_set(G_OBJECT(m_uridecodebin_elem), "uri", m_media.get_uri().c_str(), "async-handling", gboolean(TRUE), NULL);
 	g_signal_connect(G_OBJECT(m_uridecodebin_elem), "pad-added", G_CALLBACK(static_new_pad_callback), gpointer(this));
 
-	// Now set the element states to the state of the bin
-	gst_element_sync_state_with_parent(m_identity_elem);
-	gst_element_sync_state_with_parent(m_uridecodebin_elem);
+	// Do not sync states with parent here just yet, since the static_new_pad_callback
+	// does checks to see if this is the current media. Let the caller assign this new
+	// stream to m_current_stream or m_next_stream first. static_new_pad_callback
+	// won't be called until the states are synced by the sync_states() function.
 
 	// All done; scope guard can be disengaged
 	elems_guard.unguard();
@@ -232,6 +235,13 @@ main_pipeline::stream::~stream()
 }
 
 
+void main_pipeline::stream::sync_states()
+{
+	gst_element_sync_state_with_parent(m_identity_elem);
+	gst_element_sync_state_with_parent(m_uridecodebin_elem);
+}
+
+
 GstPad* main_pipeline::stream::get_srcpad()
 {
 	return m_identity_srcpad;
@@ -268,6 +278,18 @@ bool main_pipeline::stream::is_buffering() const
 }
 
 
+bool main_pipeline::stream::is_live() const
+{
+	return m_is_live;
+}
+
+
+bool main_pipeline::stream::is_seekable() const
+{
+	return m_is_seekable;
+}
+
+
 void main_pipeline::stream::static_new_pad_callback(GstElement *, GstPad *p_pad, gpointer p_data)
 {
 	stream *self = static_cast < stream* > (p_data);
@@ -291,7 +313,37 @@ void main_pipeline::stream::static_new_pad_callback(GstElement *, GstPad *p_pad,
 	gst_pad_link(p_pad, identity_sinkpad);
 	gst_object_unref(GST_OBJECT(identity_sinkpad));
 
-	NXPLAY_LOG_MSG(debug, "decodebin pad linked, stream: " << guintptr(self));
+	// Find out some details about the media, namely
+	// whether or not it is seekable and live
+	GstQuery *query;
+	gboolean is_seekable = FALSE;
+	gboolean is_live = FALSE;
+
+	query = gst_query_new_seeking(GST_FORMAT_TIME);
+	if (gst_pad_query(p_pad, query))
+		gst_query_parse_seeking(query, nullptr, &is_seekable, nullptr, nullptr);
+	gst_query_unref(query);
+
+	query = gst_query_new_latency();
+	if (gst_pad_query(p_pad, query))
+		gst_query_parse_latency(query, &is_live, nullptr, nullptr);
+	gst_query_unref(query);
+
+	self->m_is_seekable = is_seekable;
+	self->m_is_live = is_live;
+	NXPLAY_LOG_MSG(debug, "decodebin pad linked  stream: " << guintptr(self) << "  is live: " << is_live << "  is seekable: " << is_seekable);
+
+	if (self->m_pipeline.m_callbacks.m_media_information_callback)
+	{
+		bool is_current_media = (self->m_pipeline.m_current_stream.get() == self);
+		self->m_pipeline.m_callbacks.m_media_information_callback(
+			self->m_media,
+			self->m_token,
+			is_current_media,
+			self->m_is_seekable,
+			self->m_is_live
+		);
+	}
 }
 
 
@@ -845,6 +897,9 @@ bool main_pipeline::play_media_nolock(guint64 const p_token, media &&p_media, bo
 
 		// Create stream for the new current media
 		m_current_stream = setup_stream_nolock(p_token, std::move(p_media));
+		// And sync states with parent, since the new stream
+		// is now assigned to m_current_stream
+		m_current_stream->sync_states();
 
 		// Switch pipeline to PAUSED. The bus watch callback then takes care
 		// of continuing the state changes to state_playing.
@@ -866,7 +921,13 @@ bool main_pipeline::play_media_nolock(guint64 const p_token, media &&p_media, bo
 		// Discard any previously set next media
 		m_next_stream.reset();
 		if (is_valid(p_media))
+		{
+			// Create stream for the new next media
 			m_next_stream = setup_stream_nolock(p_token, std::move(p_media));
+			// And sync states with parent, since the new stream
+			// is now assigned to m_current_stream
+			m_next_stream->sync_states();
+		}
 		else
 		{
 			NXPLAY_LOG_MSG(error, "cannot schedule invalid media as next one");
@@ -885,8 +946,23 @@ void main_pipeline::set_paused_nolock(bool const p_paused)
 	// 2. State is idle
 	// 3. p_paused is true and pipeline is already paused
 	// 4. p_paused is false and pipeline is already playing
-	if ((m_pipeline_elem == nullptr) || (m_state == state_idle) || (p_paused && (m_current_gstreamer_state == GST_STATE_PAUSED)) || (!p_paused && (m_pending_gstreamer_state == GST_STATE_PLAYING)))
+	// 5. No current stream is present
+	// 6. Current stream is live
+
+	if ((m_pipeline_elem == nullptr) ||
+	    (m_state == state_idle) ||
+	    (p_paused && (m_current_gstreamer_state == GST_STATE_PAUSED)) ||
+	    (!p_paused && (m_pending_gstreamer_state == GST_STATE_PLAYING)) ||
+	    (m_current_stream == nullptr)
+	)
 		return;
+
+	if (m_current_stream->is_live())
+	{
+		// This case might be less obvious, so log it
+		NXPLAY_LOG_MSG(info, "current stream is live, cannot pause");
+		return;
+	}
 
 	// Pipeline is transitioning; postpone the call
 	if (is_transitioning_nolock())
@@ -1068,9 +1144,10 @@ void main_pipeline::recheck_buffering_state_nolock()
 	assert(m_current_stream);
 
 	// Recheck if the buffering states changed, and if so, update
-	// the relevant states and values.
+	// the relevant states and values. If however the current media
+	// is a live stream, do not pause (live sources must not pause).
 
-	if (m_current_stream->is_buffering() && (m_state == state_playing))
+	if (m_current_stream->is_buffering() && !(m_current_stream->is_live()) && (m_state == state_playing))
 	{
 		// The current stream is now buffering, but the pipeline is playing.
 		// Switch pipeline state to buffering and the GStreamer state to
@@ -1344,12 +1421,12 @@ gboolean main_pipeline::static_bus_watch(GstBus *, GstMessage *p_msg, gpointer p
 							// must happen here.
 							self->update_durations_nolock();
 
-							// Handle buffering state updates
+							// Handle buffering state updates if this is a non-live source
 							// If the current stream is not buffering, we can switch to
 							// PLAYING immediately; otherwise, remain at PAUSED until
 							// buffering is done (handled by the GST_MESSAGE_BUFFERING
 							// code below)
-							if (self->m_current_stream && self->m_current_stream->is_buffering())
+							if (self->m_current_stream && !(self->m_current_stream->is_live()) && self->m_current_stream->is_buffering())
 							{
 								NXPLAY_LOG_MSG(debug, "current stream is still buffering during startup; switching pipeline to buffering state");
 								self->set_state_nolock(state_buffering);
