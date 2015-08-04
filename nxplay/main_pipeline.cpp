@@ -1200,7 +1200,7 @@ gboolean main_pipeline::static_timeout_cb(gpointer p_data)
 
 	// Do updates if there is a pipeline, pipeline is playing, there is a current
 	// stream, and there is either a position_updated or media_about_to_end callback.
-	if ((self->m_pipeline_elem != nullptr) && (self->m_state == state_playing) != (self->m_current_stream != nullptr) && (self->m_callbacks.m_position_updated_callback || self->m_callbacks.m_media_about_to_end_callback))
+	if ((self->m_pipeline_elem != nullptr) && (self->m_state == state_playing) && (self->m_current_stream != nullptr) && (self->m_callbacks.m_position_updated_callback || self->m_callbacks.m_media_about_to_end_callback))
 	{
 		// TODO: also do BYTES queries?
         	gint64 position;
