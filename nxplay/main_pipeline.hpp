@@ -13,7 +13,6 @@
 #define NXPLAY_MAIN_PIPELINE_HPP
 
 #include <functional>
-#include <queue>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -273,7 +272,8 @@ protected:
 
 
 private:
-	// Internal functions have a _nolock suffix if they don't lock the mutex
+	// Internal functions have a _nolock suffix if they don't lock the loop mutex
+	// (they may still lock the stream mutex)
 
 
 	// miscellaneous
@@ -351,15 +351,11 @@ private:
 	};
 
 	typedef std::shared_ptr < stream > stream_sptr;
-	typedef std::queue < stream_sptr > stream_queue;
 
 	stream_sptr setup_stream_nolock(guint64 const p_token, media &&p_media);
-	void cleanup_old_streams_nolock();
-
 	static GstPadProbeReturn static_stream_eos_probe(GstPad *p_pad, GstPadProbeInfo *p_info, gpointer p_data);
 
 	stream_sptr m_current_stream, m_next_stream;
-	stream_queue m_old_streams;
 
 
 	// pipeline state & management
@@ -384,6 +380,7 @@ private:
 	gint64 query_duration_nolock(position_units const p_unit) const;
 	void update_durations_nolock();
 	void finish_seeking_nolock();
+	void make_next_stream_current_nolock();
 	void recheck_buffering_state_nolock();
 	void create_dot_pipeline_dump_nolock(std::string const &p_extra_name);
 
@@ -393,6 +390,7 @@ private:
 	bool m_update_tags_in_interval;
 	bool m_block_abouttoend_notifications;
 	bool m_force_next_duration_update;
+	bool m_stream_eos_seen;
 
 
 	// playback timer
@@ -431,7 +429,27 @@ private:
 	static gboolean static_loop_start_cb(gpointer p_data);
 
 	std::thread m_thread;
-	mutable std::mutex m_mutex;
+	// * loop mutex: Synchronization between static bus watch, playback timer, and
+	// API functions like play_media(), stop() etc.
+	// Since the pipeline hosts its own glib mainloop which runs in a separate
+	// thread (m_thread), it is necessary to ensure that these API functions
+	// arent called when the bus watch or the playback timer are executing.
+	//
+	// * stream mutex: Used to handle the next-stream => current-stream transition.
+	// When the current stream reports EOS, the static_stream_eos_probe is called,
+	// which observes said EOS. The probe then sets the m_stream_eos_seen flag to
+	// true. Each time the bus watch or the playback timer are called by the glib
+	// mainloop, they first call make_next_stream_current_nolock(). If the
+	// m_stream_eos_seen flag is set, this function sets current_media = next_media,
+	// and next_media = null. If the flag isn't set, this function does nothing.
+	// To avoid race conditions (make_next_stream_current_nolock() being called at
+	// the same time the stream EOS probe runs), the stream mutex is used.
+	// Doing the current_media = next_media, next_media = null assignment in the
+	// GLib mainloop thread instead of the streaming thread (that is, instead of
+	// doing it directly in the EOS probe yields many benefits. Much fewer locking
+	// is needed, and the probe isn't blocked for long.
+	mutable std::mutex m_loop_mutex;
+	std::mutex m_stream_mutex;
 	std::condition_variable m_condition;
 	GMainLoop *m_thread_loop;
 	GMainContext *m_thread_loop_context;

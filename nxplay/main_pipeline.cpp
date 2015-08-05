@@ -21,7 +21,7 @@ namespace
 {
 
 
-static char const *cleanup_old_streams_msg_name = "cleanup-old-streams";
+static char const *stream_eos_msg_name = "nxplay-stream-eos";
 
 
 GstFormat pos_unit_to_format(position_units const p_unit)
@@ -355,6 +355,7 @@ main_pipeline::main_pipeline(callbacks const &p_callbacks, GstClockTime const p_
 	, m_update_tags_in_interval(p_update_tags_in_interval)
 	, m_block_abouttoend_notifications(false)
 	, m_force_next_duration_update(true)
+	, m_stream_eos_seen(false)
 	, m_timeout_source(nullptr)
 	, m_needs_next_media_time(p_needs_next_media_time)
 	, m_update_interval(p_update_interval)
@@ -382,7 +383,10 @@ main_pipeline::~main_pipeline()
 	// Stop playback immediately and cancel transitioning states
 	// by shutting down the pipeline right now
 	{
-		std::unique_lock < std::mutex > lock(m_mutex);
+		// Lock the loop mutex to ensure the pipeline isn't
+		// shut down during a bus watch or playback timeout
+		// callback call
+		std::unique_lock < std::mutex > lock(m_loop_mutex);
 		shutdown_pipeline_nolock();
 	}
 
@@ -393,56 +397,56 @@ main_pipeline::~main_pipeline()
 
 bool main_pipeline::play_media_impl(guint64 const p_token, media &&p_media, bool const p_play_now)
 {
-	std::unique_lock < std::mutex > lock(m_mutex);
+	std::unique_lock < std::mutex > lock(m_loop_mutex);
 	return play_media_nolock(p_token, std::move(p_media), p_play_now);
 }
 
 
 guint64 main_pipeline::get_new_token()
 {
-	std::unique_lock < std::mutex > lock(m_mutex);
+	std::unique_lock < std::mutex > lock(m_loop_mutex);
 	return m_next_token++; // Generate unique tokens by using a monotonically increasing counter
 }
 
 
 void main_pipeline::stop()
 {
-	std::unique_lock < std::mutex > lock(m_mutex);
+	std::unique_lock < std::mutex > lock(m_loop_mutex);
 	stop_nolock();
 }
 
 
 void main_pipeline::set_paused(bool const p_paused)
 {
-	std::unique_lock < std::mutex > lock(m_mutex);
+	std::unique_lock < std::mutex > lock(m_loop_mutex);
 	set_paused_nolock(p_paused);
 }
 
 
 bool main_pipeline::is_transitioning() const
 {
-	std::unique_lock < std::mutex > lock(m_mutex);
+	std::unique_lock < std::mutex > lock(m_loop_mutex);
 	return is_transitioning_nolock();
 }
 
 
 states main_pipeline::get_current_state() const
 {
-	std::unique_lock < std::mutex > lock(m_mutex);
+	std::unique_lock < std::mutex > lock(m_loop_mutex);
 	return m_state;
 }
 
 
 void main_pipeline::set_current_position(gint64 const p_new_position, position_units const p_unit)
 {
-	std::unique_lock < std::mutex > lock(m_mutex);
+	std::unique_lock < std::mutex > lock(m_loop_mutex);
 	set_current_position_nolock(p_new_position, p_unit);
 }
 
 
 gint64 main_pipeline::get_current_position(position_units const p_unit) const
 {
-	std::unique_lock < std::mutex > lock(m_mutex);
+	std::unique_lock < std::mutex > lock(m_loop_mutex);
 
 	if ((m_pipeline_elem == nullptr) || (m_state == state_idle))
 		return -1;
@@ -455,7 +459,7 @@ gint64 main_pipeline::get_current_position(position_units const p_unit) const
 
 gint64 main_pipeline::get_duration(position_units const p_unit) const
 {
-	std::unique_lock < std::mutex > lock(m_mutex);
+	std::unique_lock < std::mutex > lock(m_loop_mutex);
 
 	switch (p_unit)
 	{
@@ -471,7 +475,7 @@ gint64 main_pipeline::get_duration(position_units const p_unit) const
 
 void main_pipeline::set_volume(double const p_new_volume, GstStreamVolumeFormat const p_format)
 {
-	std::unique_lock < std::mutex > lock(m_mutex);
+	std::unique_lock < std::mutex > lock(m_loop_mutex);
 	if (m_volume_iface != nullptr)
 		gst_stream_volume_set_volume(m_volume_iface, p_format, p_new_volume);
 }
@@ -479,7 +483,7 @@ void main_pipeline::set_volume(double const p_new_volume, GstStreamVolumeFormat 
 
 double main_pipeline::get_volume(GstStreamVolumeFormat const p_format) const
 {
-	std::unique_lock < std::mutex > lock(m_mutex);
+	std::unique_lock < std::mutex > lock(m_loop_mutex);
 	if (m_volume_iface != nullptr)
 		return gst_stream_volume_get_volume(m_volume_iface, p_format);
 	else
@@ -489,7 +493,7 @@ double main_pipeline::get_volume(GstStreamVolumeFormat const p_format) const
 
 void main_pipeline::set_muted(bool const p_mute)
 {
-	std::unique_lock < std::mutex > lock(m_mutex);
+	std::unique_lock < std::mutex > lock(m_loop_mutex);
 	if (m_volume_iface != nullptr)
 		gst_stream_volume_set_mute(m_volume_iface, p_mute ? TRUE : FALSE);
 }
@@ -497,7 +501,7 @@ void main_pipeline::set_muted(bool const p_mute)
 
 bool main_pipeline::is_muted() const
 {
-	std::unique_lock < std::mutex > lock(m_mutex);
+	std::unique_lock < std::mutex > lock(m_loop_mutex);
 	if (m_volume_iface != nullptr)
 		return gst_stream_volume_get_mute(m_volume_iface);
 	else
@@ -609,20 +613,6 @@ main_pipeline::stream_sptr main_pipeline::setup_stream_nolock(guint64 const p_to
 }
 
 
-void main_pipeline::cleanup_old_streams_nolock()
-{
-	// Clean up all the old streams in the queue
-	// See static_stream_eos_probe() and the GST_MESSAGE_APPLICATION
-	// code below for details
-	while (!(m_old_streams.empty()))
-	{
-		stream_sptr old_stream = m_old_streams.front();
-		m_old_streams.pop();
-		old_stream.reset();
-	}
-}
-
-
 GstPadProbeReturn main_pipeline::static_stream_eos_probe(GstPad *, GstPadProbeInfo *p_info, gpointer p_data)
 {
 	main_pipeline *self = static_cast < main_pipeline* > (p_data);
@@ -635,34 +625,22 @@ GstPadProbeReturn main_pipeline::static_stream_eos_probe(GstPad *, GstPadProbeIn
 	{
 		case GST_EVENT_EOS:
 		{
-			std::unique_lock < std::mutex > lock(self->m_mutex);
-
 			NXPLAY_LOG_MSG(debug, "EOS event observed at stream srcpad");
 
-			// An EOS seen by concat means that the concat element just
-			// switched its current pad to the next one. This is when
-			// the m_current_stream is done, has to be ditched,
-			// and m_next_stream needs to start playing.
+			std::unique_lock < std::mutex > lock(self->m_stream_mutex);
 
-			// Do not destroy the finished m_current_stream right away.
-			// Instead, move it in the queue, and post a message to the
-			// mainloop. This makes sure this pad probe isn't potentially
-			// blocked for a long time if the stream takes a while to be
-			// destroyed.
-			if (self->m_current_stream)
-				self->m_old_streams.push(self->m_current_stream);
+			// m_current_stream and m_next_token are no longer up to date.
+			// Raise the flag to ensure the next make_next_stream_current_nolock()
+			// call updates these two values properly.
+			self->m_stream_eos_seen = true;
 
-			// Promote the next stream to be the new current one
-			self->m_current_stream = self->m_next_stream;
-			self->m_next_stream.reset();
-
-			// Notify the bus that there is a new entry in m_old_streams to
-			// take care of
+			// Post a custom message to the bus to trigger a bus watch
+			// call as soon as possible.
 			gst_bus_post(
 				self->m_bus,
 				gst_message_new_application(
 					GST_OBJECT(self->m_pipeline_elem),
-					gst_structure_new_empty(cleanup_old_streams_msg_name)
+					gst_structure_new_empty(stream_eos_msg_name)
 				)
 			);
 
@@ -822,7 +800,6 @@ void main_pipeline::set_pipeline_to_idle_nolock(bool const p_set_state)
 	// Discard any current, next, or old streams
 	m_current_stream.reset();
 	m_next_stream.reset();
-	cleanup_old_streams_nolock();
 
 	if (p_set_state)
 		set_state_nolock(state_idle);
@@ -844,6 +821,7 @@ void main_pipeline::set_initial_state_values_nolock()
 	m_duration_in_bytes = -1;
 	m_block_abouttoend_notifications = false;
 	m_force_next_duration_update = true;
+	m_stream_eos_seen = false;
 }
 
 
@@ -1145,6 +1123,32 @@ void main_pipeline::finish_seeking_nolock()
 }
 
 
+void main_pipeline::make_next_stream_current_nolock()
+{
+	// Lock the stream mutex to ensure this function does not
+	// collide with static_stream_eos_probe
+	std::unique_lock < std::mutex > lock(m_stream_mutex);
+
+	if (!m_stream_eos_seen)
+		return;
+
+	// If m_stream_eos_seen is true, then the stream EOS probe has
+	// seen an EOS coming from the concat's srcpad, which means the
+	// current stream has ended. Therefore, promote the next stream
+	// to become the current one, since concat is playing this one
+	// now. (And set m_next_stream to null, since there is no next
+	// stream anymore unless the user later calls play_media() with
+	// p_play_now set to false.)
+	m_current_stream.reset();
+	m_current_stream = m_next_stream;
+	m_next_stream.reset();
+
+	// m_current_stream and m_next_stream are updated and in
+	// sync with the situation over at the concat element now
+	m_stream_eos_seen = false;
+}
+
+
 void main_pipeline::recheck_buffering_state_nolock()
 {
 	assert(m_current_stream);
@@ -1191,12 +1195,20 @@ void main_pipeline::create_dot_pipeline_dump_nolock(std::string const &p_extra_n
 
 gboolean main_pipeline::static_timeout_cb(gpointer p_data)
 {
+	// The timeout callback is called by the main_pipeline's internal GLib mainloop.
+
 	main_pipeline *self = static_cast < main_pipeline* > (p_data);
 
-	// lock is *not* held when this callback is invoked, since the
+	// Lock is *not* held when this callback is invoked, since the
 	// GLib mainloop is what calls it (and the lock is not held
 	// for the entire lifetime of the loop)
-	std::unique_lock < std::mutex > lock(self->m_mutex);
+	std::unique_lock < std::mutex > lock(self->m_loop_mutex);
+
+	// Every time the timeout callback runs, make sure the m_current_stream
+	// and m_next_stream values are up to date first. Since the loop mutex
+	// is locked at this point, there is no danger of API functions
+	// accessing the current stream at the same time.
+	self->make_next_stream_current_nolock();
 
 	// Do updates if there is a pipeline, pipeline is playing, there is a current
 	// stream, and there is either a position_updated or media_about_to_end callback.
@@ -1269,23 +1281,24 @@ void main_pipeline::shutdown_timeouts_nolock()
 
 gboolean main_pipeline::static_bus_watch(GstBus *, GstMessage *p_msg, gpointer p_data)
 {
+	// The bus watch is called by the main_pipeline's internal GLib mainloop.
+
 	main_pipeline *self = static_cast < main_pipeline* > (p_data);
+
+	std::unique_lock < std::mutex > lock(self->m_loop_mutex);
+
+	// Every time the bus watch runs, make sure the m_current_stream and
+	// m_next_stream values are up to date first. Since the loop mutex
+	// is locked at this point, there is no danger of API functions
+	// accessing the current stream at the same time.
+	self->make_next_stream_current_nolock();
 
 	switch (GST_MESSAGE_TYPE(p_msg))
 	{
 		case GST_MESSAGE_APPLICATION:
 		{
-			if (gst_message_has_name(p_msg, cleanup_old_streams_msg_name))
-			{
-				// The static_stream_eos_probe pad probe saw an EOS earlier,
-				// and pushed the finished stream in the m_old_streams queue.
-				// Then, it posted this message to make sure the cleanup
-				// happens here, and not in the probe (which must not block
-				// for long).
-
-				std::unique_lock < std::mutex > lock(self->m_mutex);
-				self->cleanup_old_streams_nolock();
-			}
+			if (gst_message_has_name(p_msg, stream_eos_msg_name))
+				NXPLAY_LOG_MSG(trace, "received message from stream EOS probe");
 
 			break;
 		}
@@ -1293,8 +1306,6 @@ gboolean main_pipeline::static_bus_watch(GstBus *, GstMessage *p_msg, gpointer p
 		case GST_MESSAGE_STREAM_START:
 		{
 			// This is posted when new playback actually started.
-		
-			std::unique_lock < std::mutex > lock(self->m_mutex);
 
 			NXPLAY_LOG_MSG(debug, "stream start reported by " << GST_MESSAGE_SRC_NAME(p_msg));
 
@@ -1333,8 +1344,6 @@ gboolean main_pipeline::static_bus_watch(GstBus *, GstMessage *p_msg, gpointer p
 
 		case GST_MESSAGE_EOS:
 		{
-			std::unique_lock < std::mutex > lock(self->m_mutex);
-
 			NXPLAY_LOG_MSG(debug, "EOS reported by " << GST_MESSAGE_SRC_NAME(p_msg));
 
 			if (self->m_next_stream && is_valid(self->m_next_stream->get_media()))
@@ -1364,8 +1373,6 @@ gboolean main_pipeline::static_bus_watch(GstBus *, GstMessage *p_msg, gpointer p
 
 		case GST_MESSAGE_STATE_CHANGED:
 		{
-			std::unique_lock < std::mutex > lock(self->m_mutex);
-
 			GstState old_gstreamer_state, new_gstreamer_state, pending_gstreamer_state;
 			gst_message_parse_state_changed(
 				p_msg,
@@ -1574,8 +1581,6 @@ gboolean main_pipeline::static_bus_watch(GstBus *, GstMessage *p_msg, gpointer p
 
 		case GST_MESSAGE_TAG:
 		{
-			std::unique_lock < std::mutex > lock(self->m_mutex);
-
 			if (self->m_callbacks.m_new_tags_callback)
 			{
 				NXPLAY_LOG_MSG(debug, "new tags reported by " << GST_MESSAGE_SRC_NAME(p_msg));
@@ -1615,7 +1620,6 @@ gboolean main_pipeline::static_bus_watch(GstBus *, GstMessage *p_msg, gpointer p
 			// Error messages indicate a nonrecoverable error. Create a
 			// dot pipeline dump for debugging, and reinitialize the
 			// pipeline to deal with this situation.
-			std::unique_lock < std::mutex > lock(self->m_mutex);
 			self->create_dot_pipeline_dump_nolock("error");
 			self->reinitialize_pipeline_nolock();
 
@@ -1624,8 +1628,6 @@ gboolean main_pipeline::static_bus_watch(GstBus *, GstMessage *p_msg, gpointer p
 
 		case GST_MESSAGE_BUFFERING:
 		{
-			std::unique_lock < std::mutex > lock(self->m_mutex);
-
 			gint percent;
 			GstObject *source;
 			gst_message_parse_buffering(p_msg, &percent);
@@ -1696,7 +1698,6 @@ gboolean main_pipeline::static_bus_watch(GstBus *, GstMessage *p_msg, gpointer p
 			if (GST_MESSAGE_SRC(p_msg) == GST_OBJECT(self->m_concat_elem))
 				break;
 
-			std::unique_lock < std::mutex > lock(self->m_mutex);
 			NXPLAY_LOG_MSG(debug, "duration update reported by " << GST_MESSAGE_SRC_NAME(p_msg));
 			self->update_durations_nolock();
 
@@ -1705,7 +1706,6 @@ gboolean main_pipeline::static_bus_watch(GstBus *, GstMessage *p_msg, gpointer p
 
 		case GST_MESSAGE_LATENCY:
 		{
-			std::unique_lock < std::mutex > lock(self->m_mutex);
 			NXPLAY_LOG_MSG(debug, "redistributing latency; requested by " << GST_MESSAGE_SRC_NAME(p_msg));
 			gst_bin_recalculate_latency(GST_BIN(self->m_pipeline_elem));
 			break;
@@ -1713,8 +1713,6 @@ gboolean main_pipeline::static_bus_watch(GstBus *, GstMessage *p_msg, gpointer p
 
 		case GST_MESSAGE_REQUEST_STATE:
 		{
-			std::unique_lock < std::mutex > lock(self->m_mutex);
-
 			// Switch to the new requested GStreamer state unless the pipeline is
 			// transitioning. If it is, postpone the state switch.
 
@@ -1773,7 +1771,7 @@ GstStreamVolume* main_pipeline::find_stream_volume_interface()
 
 void main_pipeline::thread_main()
 {
-	std::unique_lock < std::mutex > lock(m_mutex);
+	std::unique_lock < std::mutex > lock(m_loop_mutex);
 
 	// Setup an explciit loop context. This is necessary to avoid collisions
 	// with any other "default" context that may be present in the application 
@@ -1815,7 +1813,7 @@ void main_pipeline::thread_main()
 void main_pipeline::start_thread()
 {
 	{
-		std::unique_lock < std::mutex > lock(m_mutex);
+		std::unique_lock < std::mutex > lock(m_loop_mutex);
 
 		if (m_thread_loop != nullptr)
 			return;
@@ -1837,7 +1835,7 @@ void main_pipeline::start_thread()
 void main_pipeline::stop_thread()
 {
 	{
-		std::unique_lock < std::mutex > lock(m_mutex);
+		std::unique_lock < std::mutex > lock(m_loop_mutex);
 
 		if (m_thread_loop != nullptr)
 			g_main_loop_quit(m_thread_loop);
@@ -1858,7 +1856,7 @@ gboolean main_pipeline::static_loop_start_cb(gpointer p_data)
 	main_pipeline *self = static_cast < main_pipeline* > (p_data);
 
 	{
-		std::unique_lock < std::mutex > lock(self->m_mutex);
+		std::unique_lock < std::mutex > lock(self->m_loop_mutex);
 		NXPLAY_LOG_MSG(debug, "mainloop started - can signal that thread is started");
 		self->m_thread_loop_running = true;
 		self->m_condition.notify_all();
