@@ -348,6 +348,12 @@ private:
 		GstBin *m_container_bin;
 		bool m_is_buffering;
 		bool m_is_live, m_is_seekable;
+
+		// Used in the static_new_pad_callback and in the destructor,
+		// to prevent both from running at the same time (this is a corner
+		// case when the stream is destroyed even before the decodebin
+		// is fully initialized)
+		std::mutex m_shutdown_mutex;
 	};
 
 	typedef std::shared_ptr < stream > stream_sptr;

@@ -187,6 +187,10 @@ main_pipeline::stream::stream(main_pipeline &p_pipeline, guint64 const p_token, 
 
 main_pipeline::stream::~stream()
 {
+	// Make sure the destructor does not run at the same time as
+	// the static_new_pad_callback
+	std::unique_lock < std::mutex > lock(m_shutdown_mutex);
+
 	if (m_container_bin == nullptr)
 		return;
 
@@ -293,6 +297,9 @@ bool main_pipeline::stream::is_seekable() const
 void main_pipeline::stream::static_new_pad_callback(GstElement *, GstPad *p_pad, gpointer p_data)
 {
 	stream *self = static_cast < stream* > (p_data);
+
+	// Make sure this callback does not run at the same time as the destructor
+	std::unique_lock < std::mutex > lock(self->m_shutdown_mutex);
 
 	NXPLAY_LOG_MSG(debug, "linking new decodebin pad, stream: " << guintptr(self));
 
