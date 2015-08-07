@@ -14,6 +14,7 @@
 
 #include <functional>
 #include <memory>
+#include <set>
 #include <mutex>
 #include <thread>
 #include <condition_variable>
@@ -238,13 +239,16 @@ public:
 	 * @param p_callbacks Callbacks to use in this pipeline
 	 * @param p_needs_next_media_time If current media has only this much time to
 	 *        time to play, call the media_about_to_end_callback (see its
-	 *        documentation for details)
-	 * @param p_update_interval Update interval for position (and optionally tag) updaes
-	 * @param p_update_tags_in_interval If true, the tag updates (that is,
+	 *        documentation for details); given in nanoseconds
+	 * @param p_update_interval Update interval for position (and optionally tag)
+	 *        updates, in milliseconds
+	 * @param p_postpone_all_tags If true, the tag updates (that is,
 	 *        the new_tags_callback calls) will happen in sync with the
-	 *        periodic updates; if false, they happen asynchronously
+	 *        periodic updates; if false, they happen immediately and
+	 *        asynchronously (comparable to calling force_postpone_tag()
+	 *        for all possible tags with p_postpone = true)
 	 */
-	explicit main_pipeline(callbacks const &p_callbacks, GstClockTime const p_needs_next_media_time = GST_SECOND * 5, guint const p_update_interval = 500, bool const p_update_tags_in_interval = false);
+	explicit main_pipeline(callbacks const &p_callbacks, GstClockTime const p_needs_next_media_time = GST_SECOND * 5, guint const p_update_interval = 500, bool const p_postpone_all_tags = false);
 	~main_pipeline();
 
 	virtual guint64 get_new_token() override;
@@ -265,6 +269,8 @@ public:
 	virtual double get_volume(GstStreamVolumeFormat const p_format) const override;
 	virtual void set_muted(bool const p_mute) override;
 	virtual bool is_muted() const override;
+
+	virtual void force_postpone_tag(std::string const &p_tag, bool const p_postpone);
 
 
 protected:
@@ -393,10 +399,18 @@ private:
 	seeking_data m_seeking_data;
 	states m_state;
 	gint64 m_duration_in_nanoseconds, m_duration_in_bytes;
-	bool m_update_tags_in_interval;
 	bool m_block_abouttoend_notifications;
 	bool m_force_next_duration_update;
 	bool m_stream_eos_seen;
+
+
+	// tags management
+
+	typedef std::set < std::string > tag_set;
+	tag_set m_tags_to_always_postpone;
+	tag_list m_aggregated_tag_list;
+	tag_list m_postponed_tags_list;
+	bool m_postpone_all_tags;
 
 
 	// playback timer

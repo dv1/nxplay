@@ -355,14 +355,14 @@ void main_pipeline::stream::static_new_pad_callback(GstElement *, GstPad *p_pad,
 
 
 
-main_pipeline::main_pipeline(callbacks const &p_callbacks, GstClockTime const p_needs_next_media_time, guint const p_update_interval, bool const p_update_tags_in_interval)
+main_pipeline::main_pipeline(callbacks const &p_callbacks, GstClockTime const p_needs_next_media_time, guint const p_update_interval, bool const p_postpone_all_tags)
 	: m_state(state_idle)
 	, m_duration_in_nanoseconds(-1)
 	, m_duration_in_bytes(-1)
-	, m_update_tags_in_interval(p_update_tags_in_interval)
 	, m_block_abouttoend_notifications(false)
 	, m_force_next_duration_update(true)
 	, m_stream_eos_seen(false)
+	, m_postpone_all_tags(p_postpone_all_tags)
 	, m_timeout_source(nullptr)
 	, m_needs_next_media_time(p_needs_next_media_time)
 	, m_update_interval(p_update_interval)
@@ -380,6 +380,13 @@ main_pipeline::main_pipeline(callbacks const &p_callbacks, GstClockTime const p_
 	, m_thread_loop_context(nullptr)
 	, m_callbacks(p_callbacks)
 {
+	// By default, add the bitrate tags to the list of
+	// forcibly postponed ones, since these can be frequently
+	// updated sometimes
+	m_tags_to_always_postpone.insert(GST_TAG_MINIMUM_BITRATE);
+	m_tags_to_always_postpone.insert(GST_TAG_MAXIMUM_BITRATE);
+	m_tags_to_always_postpone.insert(GST_TAG_BITRATE);
+
 	// Start the GLib mainloop thread
 	start_thread();
 }
@@ -513,6 +520,18 @@ bool main_pipeline::is_muted() const
 		return gst_stream_volume_get_mute(m_volume_iface);
 	else
 		return false;
+}
+
+
+void main_pipeline::force_postpone_tag(std::string const &p_tag, bool const p_postpone)
+{
+	std::unique_lock < std::mutex > lock(m_loop_mutex);
+
+	auto iter = m_tags_to_always_postpone.find(p_tag);
+	if (p_postpone && (iter == m_tags_to_always_postpone.end()))
+		m_tags_to_always_postpone.insert(p_tag);
+	else if (!p_postpone && (iter != m_tags_to_always_postpone.end()))
+		m_tags_to_always_postpone.erase(iter);
 }
 
 
@@ -829,6 +848,8 @@ void main_pipeline::set_initial_state_values_nolock()
 	m_block_abouttoend_notifications = false;
 	m_force_next_duration_update = true;
 	m_stream_eos_seen = false;
+	m_aggregated_tag_list = tag_list();
+	m_postponed_tags_list = tag_list();
 }
 
 
@@ -1217,6 +1238,14 @@ gboolean main_pipeline::static_timeout_cb(gpointer p_data)
 	// accessing the current stream at the same time.
 	self->make_next_stream_current_nolock();
 
+	// Pass on any postponed tags now to the m_new_tags_callback
+	// (if there are any)
+	if (self->m_callbacks.m_new_tags_callback && (self->m_current_stream != nullptr) && !(self->m_postponed_tags_list.is_empty()))
+		self->m_callbacks.m_new_tags_callback(self->m_current_stream->get_media(), self->m_current_stream->get_token(), std::move(self->m_postponed_tags_list));
+	// Reset the postponed tasks even if no callback is set,
+	// to make sure this list does not accumulate and grow
+	self->m_postponed_tags_list = tag_list();
+
 	// Do updates if there is a pipeline, pipeline is playing, there is a current
 	// stream, and there is either a position_updated or media_about_to_end callback.
 	if ((self->m_pipeline_elem != nullptr) && (self->m_state == state_playing) && (self->m_current_stream != nullptr) && (self->m_callbacks.m_position_updated_callback || self->m_callbacks.m_media_about_to_end_callback))
@@ -1319,6 +1348,13 @@ gboolean main_pipeline::static_bus_watch(GstBus *, GstMessage *p_msg, gpointer p
 			// Fresh new media started, so clear this flag, since otherwise,
 			// media-about-to-end callback calls would not ever happen for the new media
 			self->m_block_abouttoend_notifications = false;
+
+			// Clear aggregated tag list, since it contains
+			// stale tags from the previous stream
+			self->m_aggregated_tag_list = tag_list();
+			// Clear postponed tags, since they belong to the
+			// previous stream
+			self->m_postponed_tags_list = tag_list();
 
 			if (self->m_current_stream)
 			{
@@ -1592,11 +1628,70 @@ gboolean main_pipeline::static_bus_watch(GstBus *, GstMessage *p_msg, gpointer p
 			{
 				NXPLAY_LOG_MSG(debug, "new tags reported by " << GST_MESSAGE_SRC_NAME(p_msg));
 
-				GstTagList *tag_list_ = nullptr;
-				gst_message_parse_tag(p_msg, &tag_list_);
+				GstTagList *raw_tag_list = nullptr;
+				gst_message_parse_tag(p_msg, &raw_tag_list);
 
-				tag_list list(tag_list_);
-				self->m_callbacks.m_new_tags_callback(self->m_current_stream->get_media(), self->m_current_stream->get_token(), std::move(list));
+				tag_list list(raw_tag_list);
+				tag_list new_tags = calculate_new_tags(self->m_aggregated_tag_list, list);
+				if (!new_tags.is_empty())
+				{
+					// Add these new tags to the aggregated list
+					// to be able to calculate new tags next time
+					self->m_aggregated_tag_list.insert(new_tags, GST_TAG_MERGE_REPLACE);
+
+					if (self->m_postpone_all_tags)
+					{
+						// Just add all of the tags to the list of postponed tags
+						self->m_postponed_tags_list.insert(new_tags, GST_TAG_MERGE_REPLACE);
+					}
+					else
+					{
+						bool tags_left = false;
+
+						// Go over all tags in the new_tags list, remove those which are
+						// in the m_tags_to_always_postpone set, and place these in the
+						// m_postponed_tags_list.
+						for (gint num = 0; num < gst_tag_list_n_tags(new_tags.get_tag_list()); ++num)
+						{
+							std::string name(gst_tag_list_nth_tag_name(new_tags.get_tag_list(), num));
+
+							if (self->m_tags_to_always_postpone.find(std::string(name)) == self->m_tags_to_always_postpone.end())
+							{
+								// This is one tag that is *not* in the set of
+								// tags to always remove, meaning at least this
+								// tag will remain in new_tags. Therefore, there
+								// is something to report to the new_tags_callback.
+								// => set tags_left to true.
+								tags_left = true;
+								continue;
+							}
+
+							// At this point, it is clear that this tag is one of the
+							// ones included in m_tags_to_always_postpone. Therefore,
+							// this tag must be postponed.
+
+							// If this value is already present in m_postponed_tags_list,
+							// remove it first.
+							if (has_value(self->m_postponed_tags_list, name))
+								gst_tag_list_remove_tag(self->m_postponed_tags_list.get_tag_list(), name.c_str());
+
+							// Append each value for this tag to the m_postponed_tags_list
+							for (guint index = 0; index < get_num_values_for_tag(new_tags, name); ++index)
+							{
+								GValue const *value = get_raw_value(new_tags, name, index);
+								add_raw_value(self->m_postponed_tags_list, value, name, GST_TAG_MERGE_APPEND);
+							}
+
+							// Finally, remove this tag from new_tags
+							gst_tag_list_remove_tag(new_tags.get_tag_list(), name.c_str());
+						}
+
+						// Report new_tags to the callback unless the loop above
+						// removed all values
+						if (tags_left)
+							self->m_callbacks.m_new_tags_callback(self->m_current_stream->get_media(), self->m_current_stream->get_token(), std::move(new_tags));
+					}
+				}
 			}
 
 			break;
@@ -1640,6 +1735,8 @@ gboolean main_pipeline::static_bus_watch(GstBus *, GstMessage *p_msg, gpointer p
 			gst_message_parse_buffering(p_msg, &percent);
 			source = GST_MESSAGE_SRC(p_msg);
 
+			// TODO: add buffering stats to callback
+
 			NXPLAY_LOG_MSG(debug, "buffering reported by " << GST_MESSAGE_SRC_NAME(p_msg) << " at " << percent << "%");
 
 			stream *stream_ = nullptr;
@@ -1671,7 +1768,7 @@ gboolean main_pipeline::static_bus_watch(GstBus *, GstMessage *p_msg, gpointer p
 				// TODO: make the low watermark a constructor parameter
 				// (100% as high watermark is always required, otherwise GStreamer
 				// queues may behave funny)
-				if ((percent <= 20) && !(stream_->is_buffering()))
+				if ((percent < 100) && !(stream_->is_buffering()))
 				{
 					NXPLAY_LOG_MSG(debug, label << " stream's buffering state too low; enabling buffering flag");
 					stream_->set_buffering(true);

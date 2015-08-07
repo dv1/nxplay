@@ -293,6 +293,22 @@ public:
 	 */
 	virtual bool is_muted() const = 0;
 
+	/// Adds/removes a tag to/from the set of forcibly postponed ones.
+	/**
+	 * If a tag is added to this set, they will not be reported immediately
+	 * when GStreamer posts them. Instead, the new_tags_callback will be invoked
+	 * later, in a next update interval. The nature of the interval is specific
+	 * to the implementation, but it is guaranteed that tags are then not
+	 * reported immediately. This is useful for tags which can change very often,
+	 * like the BITRATE one.
+	 *
+	 * @param p_tag Name of the tag to add/remove
+	 * @param p_postpone If true, adds the tag to the list, otherwise removes it;
+	 *        if p_postpone is true and the tag is already added, or if p_postpone
+	 *        is false and the tag is not in the set, this function does nothing
+	 */
+	virtual void force_postpone_tag(std::string const &p_tag, bool const p_postpone) = 0;
+
 
 protected:
 	// Derived classes only need to overload this one, and can leave the two play_media() functions alone
