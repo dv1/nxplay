@@ -22,6 +22,7 @@ namespace
 
 
 static char const *stream_eos_msg_name = "nxplay-stream-eos";
+static char const *element_shutdown_marker = "nxplay-element-shutdown";
 
 
 GstFormat pos_unit_to_format(position_units const p_unit)
@@ -113,6 +114,28 @@ void checked_unref(T* &p_object)
 }
 
 
+// Functions to set a marker in a GstObject.
+// This marker is then used to check if a given object is marked
+// for shutdown, meaning it will be gone soon. When a stream enters
+// its destructor, it marks all of the uridecodebin's child objects.
+// This is useful for example to filter out error messages that
+// originated from one of the uridecodebin children during shutdown.
+// Such error messages are pointless (since the object is anyway
+// going away) and only cause erroneous pipeline reinitializations.
+
+
+void mark_object_as_shutting_down(GObject *p_object)
+{
+	g_object_set_data(p_object, element_shutdown_marker, gpointer(1));
+}
+
+
+bool is_object_marked_as_shutting_down(GObject *p_object)
+{
+	return g_object_get_data(p_object, element_shutdown_marker) == gpointer(1);
+}
+
+
 } // unnamed namespace end
 
 
@@ -190,6 +213,46 @@ main_pipeline::stream::~stream()
 	// Make sure the destructor does not run at the same time as
 	// the static_new_pad_callback
 	std::unique_lock < std::mutex > lock(m_shutdown_mutex);
+
+	// Mark all of the child objects to ensure other areas know
+	// these objects are being shut down. This is in particular
+	// important for the sync handler, to be able to check if
+	// a receiver error message comes from one of these objects.
+	{
+		GstIterator *iter = gst_bin_iterate_recurse(GST_BIN(m_uridecodebin_elem));
+
+		if (iter != NULL)
+		{
+			GValue item = G_VALUE_INIT;
+			bool done = false;
+
+			while (!done)
+			{
+				switch (gst_iterator_next(iter, &item))
+				{
+					case GST_ITERATOR_OK:
+					{
+						GObject *obj = G_OBJECT(g_value_get_object(&item));
+						mark_object_as_shutting_down(obj);
+						g_value_reset(&item);
+						break;
+					}
+
+					case GST_ITERATOR_RESYNC:
+						gst_iterator_resync(iter);
+						break;
+
+					case GST_ITERATOR_ERROR:
+					case GST_ITERATOR_DONE:
+						done = true;
+						break;
+				}
+			}
+
+			g_value_unset(&item);
+			gst_iterator_free(iter);
+		}
+	}
 
 	if (m_container_bin == nullptr)
 		return;
@@ -746,9 +809,12 @@ bool main_pipeline::initialize_pipeline_nolock()
 	gst_element_link_many(m_concat_elem, audioconvert_elem, m_volume_elem, m_audiosink_elem, nullptr);
 
 	// Setup the pipeline bus
-	// NOT done by calliong gst_bus_add_watch(), since we need to explicitely
-	// connect the bus watch to the m_thread_loop_context
 	m_bus = gst_pipeline_get_bus(GST_PIPELINE(m_pipeline_elem));
+	// Set up the sync handler
+	gst_bus_set_sync_handler(m_bus, static_bus_sync_handler, gpointer(this), nullptr);
+	// Set up the bus watch
+	// NOT done by calling gst_bus_add_watch(), since we need to explicitely
+	// connect the bus watch to the m_thread_loop_context
 	m_watch_source = gst_bus_create_watch(m_bus);
 	g_source_set_callback(m_watch_source, (GSourceFunc)static_bus_watch, gpointer(this), nullptr);
 	g_source_attach(m_watch_source, m_thread_loop_context);
@@ -1313,6 +1379,36 @@ void main_pipeline::shutdown_timeouts_nolock()
 	m_timeout_source = nullptr;
 }
 
+
+GstBusSyncReply main_pipeline::static_bus_sync_handler(GstBus *, GstMessage *p_msg, gpointer)
+{
+	switch (GST_MESSAGE_TYPE(p_msg))
+	{
+		case GST_MESSAGE_ERROR:
+		{
+			// If the error message came from an object which has
+			// the shutdown marker, drop the message, because in
+			// this case, the object is part of a stream that is
+			// being destroyed. Error messages coming from these
+			// objects are pointless and should be ignored.
+
+			GstObject *src = GST_MESSAGE_SRC(p_msg);
+
+			if (is_object_marked_as_shutting_down(G_OBJECT(src)))
+			{
+				NXPLAY_LOG_MSG(debug, "dropping error message from stream object " << GST_OBJECT_NAME(src) << " that is being shut down");
+				return GST_BUS_DROP;
+			}
+
+			break;
+		}
+
+		default:
+			break;
+	}
+
+	return GST_BUS_PASS;
+}
 
 
 gboolean main_pipeline::static_bus_watch(GstBus *, GstMessage *p_msg, gpointer p_data)

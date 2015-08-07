@@ -426,6 +426,7 @@ private:
 
 	// GStreamer specifics
 
+	static GstBusSyncReply static_bus_sync_handler(GstBus *p_bus, GstMessage *p_msg, gpointer p_data);
 	static gboolean static_bus_watch(GstBus *p_bus, GstMessage *p_msg, gpointer p_data);
 	GstStreamVolume* find_stream_volume_interface();
 
