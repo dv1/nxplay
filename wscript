@@ -49,17 +49,15 @@ def add_compiler_flags(conf, env, flags, lang, compiler, uselib = ''):
 
 
 def options(opt):
-	opt.load('compiler_cxx')
-
-
-def options(opt):
 	opt.add_option('--enable-debug', action = 'store_true', default = False, help = 'enable debug build')
 	opt.add_option('--disable-docs', action = 'store_true', default = False, help = 'do not generate Doxygen documentation')
-	opt.load('compiler_cxx')
+	opt.load('compiler_cxx boost')
 
 
 def configure(conf):
-	conf.load('compiler_cxx')
+	conf.load('compiler_cxx boost')
+	conf.check_boost()
+
 	if not conf.options.disable_docs:
 		conf.load('doxygen', ['.'])
 		conf.env['BUILD_DOCS'] = True

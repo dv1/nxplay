@@ -16,7 +16,7 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
-#include "any.hpp"
+#include <boost/any.hpp>
 
 
 /** nxplay */
@@ -27,12 +27,12 @@ namespace nxplay
 /// Class representing a media to be played.
 /**
  * The media is represented as a pair of an URI string and a free-form payload.
- * The payload is of the "any" type. Values of any type can be stored in the
- * payload and extracted again by using the .cast < T > member function.
+ * The payload is of the boost::any type. Values of any type can be stored in the
+ * payload and extracted again by using the boost::any_cast < T > function.
  * Example;
  *
  *   @code
- *   int mydata = media.get_payload().cast < int > ();
+ *   int mydata = boost::any_cast < int > (media.get_payload());
  *   @endcode
  *
  * This allows callers to associate media with any kind of information they need
@@ -53,9 +53,9 @@ public:
 	/// Constructs a media object with the given URI and no payload.
 	explicit media(std::string const &p_uri);
 	/// Constructs a media object with the given URI and payload. Payload is copied.
-	explicit media(std::string const &p_uri, any const &p_payload);
+	explicit media(std::string const &p_uri, boost::any const &p_payload);
 	/// Constructs a media object with the given URI and payload. Payload is moved.
-	explicit media(std::string const &p_uri, any &&p_payload);
+	explicit media(std::string const &p_uri, boost::any &&p_payload);
 
 	/// Copy assignment operator.
 	media& operator = (media const &p_other);
@@ -73,11 +73,11 @@ public:
 	 *  It is therefore practical to return the non-const
 	 *  reference even if the media object itself is const.
 	 */
-	any& get_payload() const;
+	boost::any& get_payload() const;
 
 private:
 	std::string m_uri;
-	mutable any m_payload;
+	mutable boost::any m_payload;
 };
 
 

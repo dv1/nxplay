@@ -49,8 +49,9 @@ published [on the codeproject page](http://www.codeproject.com/Articles/11250/Hi
 Dependencies
 ------------
 
-GStreamer 1.5.2 or newer is required.
-A C++11 capable compiler is also needed (GCC 4.8 and clang 3.4 should work fine).
+GStreamer 1.5.2 or newer is required. Boost 1.50 or newer is also needed, but only header-only
+libraries are used.
+A C++11 capable compiler must be present (GCC 4.8 and clang 3.4 should work fine).
 Doxygen 1.8 or newer is needed for generating the reference documentation. If Doxygen is not available,
 and no docs are needed, use the `--disable-docs` switch when configuring the build (see below).
 

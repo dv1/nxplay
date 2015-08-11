@@ -41,14 +41,14 @@ media::media(std::string const &p_uri)
 }
 
 
-media::media(std::string const &p_uri, any const &p_payload)
+media::media(std::string const &p_uri, boost::any const &p_payload)
 	: m_uri(p_uri)
 	, m_payload(p_payload)
 {
 }
 
 
-media::media(std::string const &p_uri, any &&p_payload)
+media::media(std::string const &p_uri, boost::any &&p_payload)
 	: m_uri(p_uri)
 	, m_payload(std::move(p_payload))
 {
@@ -77,7 +77,7 @@ std::string const & media::get_uri() const
 }
 
 
-any& media::get_payload() const
+boost::any& media::get_payload() const
 {
 	return m_payload;
 }
