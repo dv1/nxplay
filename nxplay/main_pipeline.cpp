@@ -749,6 +749,7 @@ bool main_pipeline::initialize_pipeline_nolock()
 	// Construct the pipeline
 
 	GstElement *audioconvert_elem = nullptr;
+	GstElement *audioresample_elem = nullptr;
 
 	if (m_pipeline_elem != nullptr)
 		shutdown_pipeline_nolock();
@@ -786,6 +787,13 @@ bool main_pipeline::initialize_pipeline_nolock()
 		return false;
 	}
 
+	audioresample_elem = gst_element_factory_make("audioresample", "audioresample");
+	if (audioresample_elem == nullptr)
+	{
+		NXPLAY_LOG_MSG(error, "could not create audioresample element");
+		return false;
+	}
+
 	m_volume_elem = gst_element_factory_make("volume", "volume");
 	if (m_volume_elem == nullptr)
 	{
@@ -800,13 +808,15 @@ bool main_pipeline::initialize_pipeline_nolock()
 		return false;
 	}
 
-	gst_bin_add_many(GST_BIN(m_pipeline_elem), m_concat_elem, audioconvert_elem, m_volume_elem, m_audiosink_elem, nullptr);
+	g_object_set(G_OBJECT(audioresample_elem), "quality", 0, nullptr);
+
+	gst_bin_add_many(GST_BIN(m_pipeline_elem), m_concat_elem, audioconvert_elem, audioresample_elem, m_volume_elem, m_audiosink_elem, nullptr);
 	// no need to guard the elements anymore, since the pipeline
 	// now manages their lifetime
 	elems_guard.unguard();
 
 	// Link all of the elements together
-	gst_element_link_many(m_concat_elem, audioconvert_elem, m_volume_elem, m_audiosink_elem, nullptr);
+	gst_element_link_many(m_concat_elem, audioconvert_elem, audioresample_elem, m_volume_elem, m_audiosink_elem, nullptr);
 
 	// Setup the pipeline bus
 	m_bus = gst_pipeline_get_bus(GST_PIPELINE(m_pipeline_elem));
