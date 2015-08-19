@@ -163,9 +163,13 @@ int main(int argc, char *argv[])
 		{
 			std::cerr << "Error message: " << p_error_message << "\n";
 		};
-		callbacks.m_media_information_callback = [](nxplay::media const &p_media, guint64 const p_token, bool const p_is_current_media, bool const p_is_seekable, bool const p_is_live)
+		callbacks.m_is_seekable_callback = [](nxplay::media const &p_media, guint64 const p_token, bool const p_is_current_media, bool const p_is_seekable)
 		{
-			std::cerr << "New information about " << (p_is_current_media ? "current" : "next") << " media with URI " << p_media.get_uri() << " and token " << p_token << ": is seekable: " << p_is_seekable << ": is live: " << p_is_live << "\n";
+			std::cerr << (p_is_current_media ? "Current" : "Next") << " media with URI " << p_media.get_uri() << " and token " << p_token << " is seekable: " << p_is_seekable << "\n";
+		};
+		callbacks.m_is_live_callback = [](nxplay::media const &p_media, guint64 const p_token, bool const p_is_current_media, bool const p_is_live)
+		{
+			std::cerr << (p_is_current_media ? "Current" : "Next") << " media with URI " << p_media.get_uri() << " and token " << p_token << " is live: " << p_is_live << "\n";
 		};
 		callbacks.m_new_tags_callback = [](nxplay::media const &p_current_media, guint64 const p_token, nxplay::tag_list const &p_tag_list)
 		{

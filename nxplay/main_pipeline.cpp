@@ -403,17 +403,13 @@ void main_pipeline::stream::static_new_pad_callback(GstElement *, GstPad *p_pad,
 	self->m_is_live = is_live;
 	NXPLAY_LOG_MSG(debug, "decodebin pad linked  stream: " << guintptr(self) << "  is live: " << is_live << "  is seekable: " << is_seekable);
 
-	if (self->m_pipeline.m_callbacks.m_media_information_callback)
-	{
-		bool is_current_media = (self->m_pipeline.m_current_stream.get() == self);
-		self->m_pipeline.m_callbacks.m_media_information_callback(
-			self->m_media,
-			self->m_token,
-			is_current_media,
-			self->m_is_seekable,
-			self->m_is_live
-		);
-	}
+	bool is_current_media = (self->m_pipeline.m_current_stream.get() == self);
+
+	if (self->m_pipeline.m_callbacks.m_is_seekable_callback)
+		self->m_pipeline.m_callbacks.m_is_seekable_callback(self->m_media, self->m_token, is_current_media, self->m_is_seekable);
+
+	if (self->m_pipeline.m_callbacks.m_is_live_callback)
+		self->m_pipeline.m_callbacks.m_is_live_callback(self->m_media, self->m_token, is_current_media, self->m_is_live);
 }
 
 

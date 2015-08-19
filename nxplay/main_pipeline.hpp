@@ -150,18 +150,10 @@ public:
 	typedef std::function < void(media const &p_current_media, guint64 const p_token, gint64 const p_new_duration, position_units const p_unit) > duration_updated_callback;
 	/// Notifies about additional information about media
 	/**
-	 * This is called once some more details about the media are known after it is
-	 * loaded. Such details are: whether or not this is a live media source, and
-	 * whether or not this media is seekable. The pipeline will automatically
-	 * refuse to seek if the media is not seekable, and if it is live, buffering
-	 * will never pause playback.
-	 *
-	 * If it cannot be determined whether or not media is seekable, it is assumed
-	 * to be non-seekable. Same with the live flag; if it cannot be determined,
-	 * the media is assumed to not be live.
-	 *
-	 * @note "live" refers to the GStreamer definition of live. This means that
-	 * for example HTTP streams are not live, while RTSP and line-in sources are.
+	 * Informs about whether or not the media is seekable. set_current_position
+	 * calls will be ignored if the media is not seekable or if it is still
+	 * undetermined whether or not seeking is possible. The pipeline does this
+	 * check automatically.
 	 *
 	 * @param p_media Const reference to the media this information is about
 	 * @param p_token Associated playback token (see pipeline::play_media() )
@@ -169,9 +161,23 @@ public:
 	 *        otherwise
 	 * @param p_is_seekable true if the set_current_position() call is supported
 	 *        with the current media, false otherwise
+	 */
+	typedef std::function < void(media const &p_media, guint64 const p_token, bool const p_is_current_media, bool const p_is_seekable) > is_seekable_callback;
+	/**
+	 * Informs about whether or not the media is live.
+	 *
+	 * "live" refers to the GStreamer definition of live. This means that for
+	 * example HTTP streams are not live, while RTSP and line-in sources are.
+	 * If a media is live, the pipeline will not pause during buffering, since
+	 * this leads to undefined behavior in GStreamer.
+	 *
+	 * @param p_media Const reference to the media this information is about
+	 * @param p_token Associated playback token (see pipeline::play_media() )
+	 * @param p_is_current_media true if p_media is the current media, false
+	 *        otherwise
 	 * @param p_is_live true if this is a live media source, false otherwise
 	 */
-	typedef std::function < void(media const &p_media, guint64 const p_token, bool const p_is_current_media, bool const p_is_seekable, bool const p_is_live) > media_information_callback;
+	typedef std::function < void(media const &p_media, guint64 const p_token, bool const p_is_current_media, bool const p_is_live) > is_live_callback;
 	/// Notifies about the current media's playback position in the given unit
 	/**
 	 * This callback is invoked repeatedly if playback positions can be determined.
@@ -227,7 +233,8 @@ public:
 		state_changed_callback      m_state_changed_callback;
 		buffering_updated_callback  m_buffering_updated_callback;
 		duration_updated_callback   m_duration_updated_callback;
-		media_information_callback  m_media_information_callback;
+		is_seekable_callback        m_is_seekable_callback;
+		is_live_callback            m_is_live_callback;
 		position_updated_callback   m_position_updated_callback;
 		media_about_to_end_callback m_media_about_to_end_callback;
 	};
@@ -341,6 +348,7 @@ private:
 		bool is_buffering() const;
 
 		bool is_live() const;
+
 		bool is_seekable() const;
 
 	private:
