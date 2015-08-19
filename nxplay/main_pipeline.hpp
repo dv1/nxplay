@@ -164,7 +164,8 @@ public:
 	 */
 	typedef std::function < void(media const &p_media, guint64 const p_token, bool const p_is_current_media, bool const p_is_seekable) > is_seekable_callback;
 	/**
-	 * Informs about whether or not the media is live.
+	 * Informs about whether or not the media is live. Until it is determined
+	 * if the stream is live or not, it is assumed to be live.
 	 *
 	 * "live" refers to the GStreamer definition of live. This means that for
 	 * example HTTP streams are not live, while RTSP and line-in sources are.
@@ -348,6 +349,8 @@ private:
 		bool is_buffering() const;
 
 		bool is_live() const;
+		bool is_live_status_known() const;
+		void recheck_live_status(bool const p_is_current_media);
 
 		bool is_seekable() const;
 
@@ -361,7 +364,9 @@ private:
 		GstPad *m_identity_srcpad, *m_concat_sinkpad;
 		GstBin *m_container_bin;
 		bool m_is_buffering;
-		bool m_is_live, m_is_seekable;
+		bool m_is_live;
+		bool m_is_live_status_known;
+		bool m_is_seekable;
 
 		// Used in the static_new_pad_callback and in the destructor,
 		// to prevent both from running at the same time (this is a corner

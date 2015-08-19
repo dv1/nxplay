@@ -152,6 +152,7 @@ main_pipeline::stream::stream(main_pipeline &p_pipeline, guint64 const p_token, 
 	, m_container_bin(p_container_bin)
 	, m_is_buffering(false)
 	, m_is_live(false)
+	, m_is_live_status_known(false)
 	, m_is_seekable(false)
 {
 	assert(m_container_bin != nullptr);
@@ -351,6 +352,36 @@ bool main_pipeline::stream::is_live() const
 }
 
 
+bool main_pipeline::stream::is_live_status_known() const
+{
+	return m_is_live_status_known;
+}
+
+
+void main_pipeline::stream::recheck_live_status(bool const p_is_current_media)
+{
+	GstQuery *query = gst_query_new_latency();
+	gboolean is_live;
+
+	if (gst_pad_query(m_identity_srcpad, query))
+	{
+		gst_query_parse_latency(query, &is_live, nullptr, nullptr);
+		m_is_live = is_live;
+		m_is_live_status_known = true;
+
+		if (m_pipeline.m_callbacks.m_is_live_callback)
+			m_pipeline.m_callbacks.m_is_live_callback(m_media, m_token, p_is_current_media, m_is_live);
+	}
+	else
+		m_is_live_status_known = false;
+
+	NXPLAY_LOG_MSG(debug, "live status is known: " << m_is_live_status_known << "   is live: " << m_is_live);
+
+	gst_query_unref(query);
+
+}
+
+
 bool main_pipeline::stream::is_seekable() const
 {
 	return m_is_seekable;
@@ -387,29 +418,21 @@ void main_pipeline::stream::static_new_pad_callback(GstElement *, GstPad *p_pad,
 	// whether or not it is seekable and live
 	GstQuery *query;
 	gboolean is_seekable = FALSE;
-	gboolean is_live = FALSE;
 
 	query = gst_query_new_seeking(GST_FORMAT_TIME);
 	if (gst_pad_query(p_pad, query))
 		gst_query_parse_seeking(query, nullptr, &is_seekable, nullptr, nullptr);
 	gst_query_unref(query);
 
-	query = gst_query_new_latency();
-	if (gst_pad_query(p_pad, query))
-		gst_query_parse_latency(query, &is_live, nullptr, nullptr);
-	gst_query_unref(query);
-
 	self->m_is_seekable = is_seekable;
-	self->m_is_live = is_live;
-	NXPLAY_LOG_MSG(debug, "decodebin pad linked  stream: " << guintptr(self) << "  is live: " << is_live << "  is seekable: " << is_seekable);
+	NXPLAY_LOG_MSG(debug, "decodebin pad linked  stream: " << guintptr(self) << "  is seekable: " << is_seekable);
 
 	bool is_current_media = (self->m_pipeline.m_current_stream.get() == self);
 
 	if (self->m_pipeline.m_callbacks.m_is_seekable_callback)
 		self->m_pipeline.m_callbacks.m_is_seekable_callback(self->m_media, self->m_token, is_current_media, self->m_is_seekable);
 
-	if (self->m_pipeline.m_callbacks.m_is_live_callback)
-		self->m_pipeline.m_callbacks.m_is_live_callback(self->m_media, self->m_token, is_current_media, self->m_is_live);
+	self->recheck_live_status(is_current_media);
 }
 
 
@@ -1025,7 +1048,7 @@ void main_pipeline::set_paused_nolock(bool const p_paused)
 	// 3. p_paused is true and pipeline is already paused
 	// 4. p_paused is false and pipeline is already playing
 	// 5. No current stream is present
-	// 6. Current stream is live
+	// 6. Current stream is live or live status is not known
 
 	if ((m_pipeline_elem == nullptr) ||
 	    (m_state == state_idle) ||
@@ -1038,7 +1061,17 @@ void main_pipeline::set_paused_nolock(bool const p_paused)
 	if (m_current_stream->is_live())
 	{
 		// This case might be less obvious, so log it
+		// Live pipelines cannot be paused
 		NXPLAY_LOG_MSG(info, "current stream is live, cannot pause");
+		return;
+	}
+
+	if (!(m_current_stream->is_live_status_known()))
+	{
+		// To be on the safe side, don't pause if the live
+		// status isn't known, in case it later turns out
+		// to be live
+		NXPLAY_LOG_MSG(info, "current stream's live status is not known yet, cannot pause");
 		return;
 	}
 
@@ -1256,8 +1289,10 @@ void main_pipeline::recheck_buffering_state_nolock()
 	// Recheck if the buffering states changed, and if so, update
 	// the relevant states and values. If however the current media
 	// is a live stream, do not pause (live sources must not pause).
+	// Also, if the live status isn't known, don't pause, in case
+	// the media later turns out to be live.
 
-	if (m_current_stream->is_buffering() && !(m_current_stream->is_live()) && (m_state == state_playing))
+	if (m_current_stream->is_buffering() && !(m_current_stream->is_live()) && m_current_stream->is_live_status_known() && (m_state == state_playing))
 	{
 		// The current stream is now buffering, but the pipeline is playing.
 		// Switch pipeline state to buffering and the GStreamer state to
@@ -1470,6 +1505,9 @@ gboolean main_pipeline::static_bus_watch(GstBus *, GstMessage *p_msg, gpointer p
 
 				if (self->m_callbacks.m_media_started_callback)
 					self->m_callbacks.m_media_started_callback(self->m_current_stream->get_media(), self->m_current_stream->get_token());
+
+				if (!(self->m_current_stream->is_live_status_known()))
+					self->m_current_stream->recheck_live_status(true);
 
 				// The new current media might have been buffering back when
 				// it was the next media. If so, it may still need to finish
