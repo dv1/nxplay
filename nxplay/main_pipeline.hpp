@@ -18,6 +18,7 @@
 #include <mutex>
 #include <thread>
 #include <condition_variable>
+#include <boost/optional.hpp>
 #include "pipeline.hpp"
 #include "tag_list.hpp"
 
@@ -116,10 +117,26 @@ public:
 	 * @param p_new_state The state the pipeline is in now
 	 */
 	typedef std::function < void(states const p_old_state, states const p_new_state) > state_changed_callback;
+	/// Notifies about the current buffer level.
+	/**
+	 * This function is called repeatedly, in the same intervals as the
+	 * position updates.
+	 * The call intervals are determined by the p_update_interval argument in
+	 * the main_pipeline constructor.
+	 *
+	 * @param p_current_media Const reference to internal new current media
+	 * @param p_token Associated playback token (see pipeline::play_media() )
+	 * @param p_level Fill level of the current stream's buffer, in bytes
+	 */
+	typedef std::function < void(media const &p_current_media, guint64 const p_token, guint const p_level) > buffer_level_callback;
 	/// Notifies about buffering updates.
 	/**
 	 * When media needs to buffer, this callback is invoked. This gives applications
 	 * the chance to display a wait indicator if p_is_current_media is true.
+	 *
+	 * @note p_level is of type boost::optional < guint > . if no fill level is known,
+	 * p_level will have the value boost::none. If it does not have this value, the
+	 * fill level in bytes can be retrieved by using the "*p_level" expression.
 	 *
 	 * @note This can even be called for current media while it is playing. This happens
 	 * if buffering is going on with live sources. Playback cannot be paused if the
@@ -132,8 +149,10 @@ public:
 	 * @param p_is_current_media true if p_media is the current media (in which case the
 	 *        pipeline's current state will be state_buffering), false otherwise
 	 * @param p_percentage Buffering percentage (0-100)
+	 * @param p_level Fill level of the current stream's buffer, in bytes, or boost::none
+	 *        if no current fill level is known
 	 */
-	typedef std::function < void(media const &p_media, guint64 const p_token, bool const p_is_current_media, unsigned int const p_percentage) > buffering_updated_callback;
+	typedef std::function < void(media const &p_media, guint64 const p_token, bool const p_is_current_media, unsigned int const p_percentage, boost::optional < guint > const p_level) > buffering_updated_callback;
 	/// Notifies about a newly determined duration value for the current media.
 	/**
 	 * Duration updates might happen more than once for the same current media. With
@@ -231,6 +250,7 @@ public:
 		warning_callback            m_warning_callback;
 		error_callback              m_error_callback;
 		new_tags_callback           m_new_tags_callback;
+		buffer_level_callback       m_buffer_level_callback;
 		state_changed_callback      m_state_changed_callback;
 		buffering_updated_callback  m_buffering_updated_callback;
 		duration_updated_callback   m_duration_updated_callback;
@@ -345,6 +365,9 @@ private:
 
 		bool contains_object(GstObject *p_object);
 
+		boost::optional < guint > get_current_buffer_level() const;
+		boost::optional < guint > get_buffer_size() const;
+
 		void set_buffering(bool const p_flag);
 		bool is_buffering() const;
 
@@ -356,11 +379,12 @@ private:
 
 	private:
 		static void static_new_pad_callback(GstElement *p_uridecodebin, GstPad *p_pad, gpointer p_data);
+		static void static_element_added_callback(GstElement *p_uridecodebin, GstElement *p_element, gpointer p_data);
 
 		main_pipeline &m_pipeline;
 		guint64 m_token;
 		media m_media;
-		GstElement *m_uridecodebin_elem, *m_identity_elem, *m_concat_elem;
+		GstElement *m_uridecodebin_elem, *m_identity_elem, *m_concat_elem, *m_queue_elem;
 		GstPad *m_identity_srcpad, *m_concat_sinkpad;
 		GstBin *m_container_bin;
 		bool m_is_buffering;

@@ -147,6 +147,7 @@ main_pipeline::stream::stream(main_pipeline &p_pipeline, guint64 const p_token, 
 	, m_uridecodebin_elem(nullptr)
 	, m_identity_elem(nullptr)
 	, m_concat_elem(p_concat_elem)
+	, m_queue_elem(nullptr)
 	, m_identity_srcpad(nullptr)
 	, m_concat_sinkpad(nullptr)
 	, m_container_bin(p_container_bin)
@@ -198,6 +199,7 @@ main_pipeline::stream::stream(main_pipeline &p_pipeline, guint64 const p_token, 
 	// pipeline may be set to PAUSED state, which affects gapless playback)
 	g_object_set(G_OBJECT(m_uridecodebin_elem), "uri", m_media.get_uri().c_str(), "async-handling", gboolean(TRUE), NULL);
 	g_signal_connect(G_OBJECT(m_uridecodebin_elem), "pad-added", G_CALLBACK(static_new_pad_callback), gpointer(this));
+	g_signal_connect(G_OBJECT(m_uridecodebin_elem), "element-added", G_CALLBACK(static_element_added_callback), gpointer(this));
 
 	// Do not sync states with parent here just yet, since the static_new_pad_callback
 	// does checks to see if this is the current media. Let the caller assign this new
@@ -334,6 +336,34 @@ bool main_pipeline::stream::contains_object(GstObject *p_object)
 }
 
 
+boost::optional < guint > main_pipeline::stream::get_current_buffer_level() const
+{
+	if (m_queue_elem != nullptr)
+	{
+		guint buffer_level = 0;
+		g_object_get(G_OBJECT(m_queue_elem), "current-level-bytes", &buffer_level, nullptr);
+		return buffer_level;
+	}
+	else
+		return boost::none;
+}
+
+
+boost::optional < guint > main_pipeline::stream::get_buffer_size() const
+{
+	if (m_queue_elem != nullptr)
+	{
+		gint64 buffer_size = 0;
+		g_object_get(G_OBJECT(m_uridecodebin_elem), "buffer-duration", &buffer_size, nullptr);
+		NXPLAY_LOG_MSG(debug, "XXX " << buffer_size);
+		if (buffer_size >= 0)
+			return guint(buffer_size);
+	}
+
+	return boost::none;
+}
+
+
 void main_pipeline::stream::set_buffering(bool const p_flag)
 {
 	m_is_buffering = p_flag;
@@ -433,6 +463,23 @@ void main_pipeline::stream::static_new_pad_callback(GstElement *, GstPad *p_pad,
 		self->m_pipeline.m_callbacks.m_is_seekable_callback(self->m_media, self->m_token, is_current_media, self->m_is_seekable);
 
 	self->recheck_live_status(is_current_media);
+}
+
+
+void main_pipeline::stream::static_element_added_callback(GstElement *, GstElement *p_element, gpointer p_data)
+{
+	stream *self = static_cast < stream* > (p_data);
+
+	gchar *name_cstr = gst_element_get_name(p_element);
+	bool is_queue = g_str_has_prefix(name_cstr, "queue");
+
+	if (is_queue)
+	{
+		NXPLAY_LOG_MSG(debug, "found queue element \"" << name_cstr << "\"");
+		self->m_queue_elem = p_element;
+	}
+
+	g_free(name_cstr);
 }
 
 
@@ -1357,6 +1404,19 @@ gboolean main_pipeline::static_timeout_cb(gpointer p_data)
 	// stream, and there is either a position_updated or media_about_to_end callback.
 	if ((self->m_pipeline_elem != nullptr) && (self->m_state == state_playing) && (self->m_current_stream != nullptr) && (self->m_callbacks.m_position_updated_callback || self->m_callbacks.m_media_about_to_end_callback))
 	{
+		if (self->m_callbacks.m_buffer_level_callback)
+		{
+			auto cur_level = self->m_current_stream->get_current_buffer_level();
+			if (cur_level)
+			{
+				self->m_callbacks.m_buffer_level_callback(
+					self->m_current_stream->get_media(),
+					self->m_current_stream->get_token(),
+					*cur_level
+				);
+			}
+		}
+
 		// TODO: also do BYTES queries?
         	gint64 position;
 	        if (gst_element_query_position(GST_ELEMENT(self->m_pipeline_elem), GST_FORMAT_TIME, &position))
@@ -1928,7 +1988,15 @@ gboolean main_pipeline::static_bus_watch(GstBus *, GstMessage *p_msg, gpointer p
 
 				// Notify about buffering
 				if (self->m_callbacks.m_buffering_updated_callback)
-					self->m_callbacks.m_buffering_updated_callback(stream_->get_media(), stream_->get_token(), is_current, percent);
+				{
+					self->m_callbacks.m_buffering_updated_callback(
+						stream_->get_media(),
+						stream_->get_token(),
+						is_current,
+						percent,
+						stream_->get_current_buffer_level()
+					);
+				}
 			}
 
 			break;
