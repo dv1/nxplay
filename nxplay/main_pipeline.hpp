@@ -302,7 +302,7 @@ public:
 
 
 protected:
-	virtual bool play_media_impl(guint64 const p_token, media &&p_media, bool const p_play_now) override;
+	virtual bool play_media_impl(guint64 const p_token, media &&p_media, bool const p_play_now, playback_properties const &p_properties) override;
 
 
 private:
@@ -337,6 +337,7 @@ private:
 		gint64 m_position;
 		position_units m_position_format;
 		GstState m_gstreamer_state;
+		playback_properties m_playback_properties;
 
 		postponed_task()
 			: m_type(type_none)
@@ -354,7 +355,7 @@ private:
 	class stream
 	{
 	public:
-		explicit stream(main_pipeline &p_pipeline, guint64 const p_token, media &&p_media, GstBin *p_container_bin, GstElement *p_concat_elem);
+		explicit stream(main_pipeline &p_pipeline, guint64 const p_token, media &&p_media, GstBin *p_container_bin, GstElement *p_concat_elem, playback_properties const &p_properties);
 		~stream();
 
 		void sync_states();
@@ -362,6 +363,7 @@ private:
 		GstPad* get_srcpad();
 		guint64 get_token() const;
 		media const & get_media() const;
+		playback_properties const & get_playback_properties() const;
 
 		bool contains_object(GstObject *p_object);
 
@@ -384,6 +386,7 @@ private:
 		main_pipeline &m_pipeline;
 		guint64 m_token;
 		media m_media;
+		playback_properties m_playback_properties;
 		GstElement *m_uridecodebin_elem, *m_identity_elem, *m_concat_elem, *m_queue_elem;
 		GstPad *m_identity_srcpad, *m_concat_sinkpad;
 		GstBin *m_container_bin;
@@ -401,7 +404,7 @@ private:
 
 	typedef std::shared_ptr < stream > stream_sptr;
 
-	stream_sptr setup_stream_nolock(guint64 const p_token, media &&p_media);
+	stream_sptr setup_stream_nolock(guint64 const p_token, media &&p_media, playback_properties const &p_properties);
 	static GstPadProbeReturn static_stream_eos_probe(GstPad *p_pad, GstPadProbeInfo *p_info, gpointer p_data);
 
 	stream_sptr m_current_stream, m_next_stream;
@@ -422,13 +425,13 @@ private:
 	void set_pipeline_to_idle_nolock(bool const p_set_state);
 	void set_initial_state_values_nolock();
 	void set_state_nolock(states const p_new_state);
-	bool play_media_nolock(guint64 const p_token, media &&p_media, bool const p_play_now);
+	bool play_media_nolock(guint64 const p_token, media &&p_media, bool const p_play_now, playback_properties const &p_properties);
 	void set_paused_nolock(bool const p_paused);
 	void set_current_position_nolock(gint64 const p_new_position, position_units const p_unit);
 	void stop_nolock();
 	gint64 query_duration_nolock(position_units const p_unit) const;
 	void update_durations_nolock();
-	void finish_seeking_nolock();
+	bool finish_seeking_nolock(bool const p_set_state_after_seeking);
 	void make_next_stream_current_nolock();
 	void recheck_buffering_state_nolock();
 	void create_dot_pipeline_dump_nolock(std::string const &p_extra_name);

@@ -140,10 +140,11 @@ bool is_object_marked_as_shutting_down(GObject *p_object)
 
 
 
-main_pipeline::stream::stream(main_pipeline &p_pipeline, guint64 const p_token, media &&p_media, GstBin *p_container_bin, GstElement *p_concat_elem)
+main_pipeline::stream::stream(main_pipeline &p_pipeline, guint64 const p_token, media &&p_media, GstBin *p_container_bin, GstElement *p_concat_elem, playback_properties const &p_properties)
 	: m_pipeline(p_pipeline)
 	, m_token(p_token)
 	, m_media(std::move(p_media))
+	, m_playback_properties(p_properties)
 	, m_uridecodebin_elem(nullptr)
 	, m_identity_elem(nullptr)
 	, m_concat_elem(p_concat_elem)
@@ -200,6 +201,20 @@ main_pipeline::stream::stream(main_pipeline &p_pipeline, guint64 const p_token, 
 	g_object_set(G_OBJECT(m_uridecodebin_elem), "uri", m_media.get_uri().c_str(), "async-handling", gboolean(TRUE), NULL);
 	g_signal_connect(G_OBJECT(m_uridecodebin_elem), "pad-added", G_CALLBACK(static_new_pad_callback), gpointer(this));
 	g_signal_connect(G_OBJECT(m_uridecodebin_elem), "element-added", G_CALLBACK(static_element_added_callback), gpointer(this));
+
+	// Configure buffer size and duration if necessary
+	if (p_properties.m_buffer_duration)
+	{
+		gint64 duration = *(p_properties.m_buffer_duration);
+		NXPLAY_LOG_MSG(debug, "setting buffer duration to a maximum average of " << duration << " nanoseconds");
+		g_object_set(G_OBJECT(m_uridecodebin_elem), "buffer-duration", duration, nullptr);
+	}
+	if (p_properties.m_buffer_size)
+	{
+		gint size = *(p_properties.m_buffer_size);
+		NXPLAY_LOG_MSG(debug, "setting buffer size to a maximum average of " << size << " bytes");
+		g_object_set(G_OBJECT(m_uridecodebin_elem), "buffer-size", size, nullptr);
+	}
 
 	// Do not sync states with parent here just yet, since the static_new_pad_callback
 	// does checks to see if this is the current media. Let the caller assign this new
@@ -327,6 +342,12 @@ guint64 main_pipeline::stream::get_token() const
 media const & main_pipeline::stream::get_media() const
 {
 	return m_media;
+}
+
+
+playback_properties const & main_pipeline::stream::get_playback_properties() const
+{
+	return m_playback_properties;
 }
 
 
@@ -538,10 +559,10 @@ main_pipeline::~main_pipeline()
 }
 
 
-bool main_pipeline::play_media_impl(guint64 const p_token, media &&p_media, bool const p_play_now)
+bool main_pipeline::play_media_impl(guint64 const p_token, media &&p_media, bool const p_play_now, playback_properties const &p_properties)
 {
 	std::unique_lock < std::mutex > lock(m_loop_mutex);
-	return play_media_nolock(p_token, std::move(p_media), p_play_now);
+	return play_media_nolock(p_token, std::move(p_media), p_play_now, p_properties);
 }
 
 
@@ -716,7 +737,7 @@ void main_pipeline::handle_postponed_task_nolock()
 	{
 		case postponed_task::type_play:
 			NXPLAY_LOG_MSG(debug, "handling postponed play_media task");
-			play_media_nolock(m_postponed_task.m_token, std::move(m_postponed_task.m_media), true);
+			play_media_nolock(m_postponed_task.m_token, std::move(m_postponed_task.m_media), true, m_postponed_task.m_playback_properties);
 			break;
 
 		case postponed_task::type_stop:
@@ -745,14 +766,15 @@ void main_pipeline::handle_postponed_task_nolock()
 }
 
 
-main_pipeline::stream_sptr main_pipeline::setup_stream_nolock(guint64 const p_token, media &&p_media)
+main_pipeline::stream_sptr main_pipeline::setup_stream_nolock(guint64 const p_token, media &&p_media, playback_properties const &p_properties)
 {
 	stream_sptr new_stream(new stream(
 		*this,
 		p_token,
 		std::move(p_media),
 		GST_BIN(m_pipeline_elem),
-		m_concat_elem
+		m_concat_elem,
+		p_properties
 	));
 
 	// Add an EOS probe, necessary for the gapless switching between next and current streams
@@ -1005,7 +1027,7 @@ void main_pipeline::set_state_nolock(states const p_new_state)
 }
 
 
-bool main_pipeline::play_media_nolock(guint64 const p_token, media &&p_media, bool const p_play_now)
+bool main_pipeline::play_media_nolock(guint64 const p_token, media &&p_media, bool const p_play_now, playback_properties const &p_properties)
 {
 	// Try to play media right now if either one of these apply:
 	// 1. Pipeline is in the idle state
@@ -1027,6 +1049,7 @@ bool main_pipeline::play_media_nolock(guint64 const p_token, media &&p_media, bo
 			m_postponed_task.m_type = postponed_task::type_play;
 			m_postponed_task.m_media = std::move(p_media);
 			m_postponed_task.m_token = p_token;
+			m_postponed_task.m_playback_properties = p_properties;
 			return true;
 		}
 
@@ -1044,7 +1067,7 @@ bool main_pipeline::play_media_nolock(guint64 const p_token, media &&p_media, bo
 		set_state_nolock(state_starting);
 
 		// Create stream for the new current media
-		m_current_stream = setup_stream_nolock(p_token, std::move(p_media));
+		m_current_stream = setup_stream_nolock(p_token, std::move(p_media), p_properties);
 		// And sync states with parent, since the new stream
 		// is now assigned to m_current_stream
 		m_current_stream->sync_states();
@@ -1071,7 +1094,7 @@ bool main_pipeline::play_media_nolock(guint64 const p_token, media &&p_media, bo
 		if (is_valid(p_media))
 		{
 			// Create stream for the new next media
-			m_next_stream = setup_stream_nolock(p_token, std::move(p_media));
+			m_next_stream = setup_stream_nolock(p_token, std::move(p_media), p_properties);
 			// And sync states with parent, since the new stream
 			// is now assigned to m_current_stream
 			m_next_stream->sync_states();
@@ -1173,8 +1196,9 @@ void main_pipeline::set_current_position_nolock(gint64 const p_new_position, pos
 	if (m_seeking_data.m_was_paused)
 	{
 		// If the pipeline is already paused, then seeking can be
-		// finished right now.
-		finish_seeking_nolock();
+		// finished right now. This also sets the state back to
+		// paused or playing, depending on what it was before.
+		finish_seeking_nolock(true);
 	}
 	else
 	{
@@ -1261,10 +1285,12 @@ void main_pipeline::update_durations_nolock()
 }
 
 
-void main_pipeline::finish_seeking_nolock()
+bool main_pipeline::finish_seeking_nolock(bool const p_set_state_after_seeking)
 {
 	// This finishes the seeking process that was started by a
 	// set_current_position() call.
+
+	bool ret = true;
 
 	// Perform the actual seek
 	bool succeeded = gst_element_seek(
@@ -1277,29 +1303,38 @@ void main_pipeline::finish_seeking_nolock()
 
 	if (!succeeded)
 	{
+		ret = false;
 		NXPLAY_LOG_MSG(error, "seeking failed");
-		return;
+
+		// Do not exit early; if p_set_state_after_seeking is true,
+		// then the pipeline needs to be switched back to the previous state,
+		// otherwise the pipeline remains stuck in the seeking state forever
 	}
 
 	m_seeking_data.m_seek_to_position = GST_CLOCK_TIME_NONE;
 
-	if (m_seeking_data.m_was_paused)
+	if (p_set_state_after_seeking)
 	{
-		// If the pipeline was already paused when the seeking
-		// process started, then the GStreamer state does not
-		// have to be changed, since it is already PAUSED
-		NXPLAY_LOG_MSG(debug, "seeking finished; switching back to state paused");
-		set_state_nolock(state_paused);
+		if (m_seeking_data.m_was_paused)
+		{
+			// If the pipeline was already paused when the seeking
+			// process started, then the GStreamer state does not
+			// have to be changed, since it is already PAUSED
+			NXPLAY_LOG_MSG(debug, "seeking finished; switching back to state paused");
+			set_state_nolock(state_paused);
 
-		// Handle any tasks that were postponed during the seeking state
-		handle_postponed_task_nolock();
+			// Handle any tasks that were postponed during the seeking state
+			handle_postponed_task_nolock();
+		}
+		else
+		{
+			NXPLAY_LOG_MSG(debug, "seeking finished; witching to PLAYING now");
+			set_gstreamer_state_nolock(GST_STATE_PLAYING);
+			// the bus watch will handle the pipeline state_seeking -> state_playing change
+		}
 	}
-	else
-	{
-		NXPLAY_LOG_MSG(debug, "seeking finished; witching to PLAYING now");
-		set_gstreamer_state_nolock(GST_STATE_PLAYING);
-		// the bus watch will handle the pipeline state_seeking -> state_playing change
-	}
+
+	return ret;
 }
 
 
@@ -1595,8 +1630,9 @@ gboolean main_pipeline::static_bus_watch(GstBus *, GstMessage *p_msg, gpointer p
 				// since play_media() modifies m_next_media
 				media m(std::move(self->m_next_stream->get_media()));
 				guint64 token = self->m_next_stream->get_token();
+				playback_properties properties = self->m_next_stream->get_playback_properties();
 				NXPLAY_LOG_MSG(info, "there is next media to play with URI " << m.get_uri());
-				self->play_media_nolock(token, std::move(m), true);
+				self->play_media_nolock(token, std::move(m), true, properties);
 
 				// the play_media_nolock() call will eventually cause a STREAM_START
 				// message to be emitted, which in turn will call the media_started
@@ -1677,21 +1713,60 @@ gboolean main_pipeline::static_bus_watch(GstBus *, GstMessage *p_msg, gpointer p
 							// must happen here.
 							self->update_durations_nolock();
 
-							// Handle buffering state updates if this is a non-live source
-							// If the current stream is not buffering, we can switch to
-							// PLAYING immediately; otherwise, remain at PAUSED until
-							// buffering is done (handled by the GST_MESSAGE_BUFFERING
-							// code below)
-							if (self->m_current_stream && !(self->m_current_stream->is_live()) && self->m_current_stream->is_buffering())
+							if (self->m_current_stream)
 							{
-								NXPLAY_LOG_MSG(debug, "current stream is still buffering during startup; switching pipeline to buffering state");
-								self->set_state_nolock(state_buffering);
-							}
-							else
-							{
-								NXPLAY_LOG_MSG(debug, "current stream fully buffered or does not need buffering; continuing to playing state");
-								self->set_state_nolock(state_paused);
-								self->set_gstreamer_state_nolock(GST_STATE_PLAYING);
+								playback_properties const &pprops = self->m_current_stream->get_playback_properties();
+
+								if ((pprops.m_start_at_position > 0) && self->m_current_stream->is_seekable())
+								{
+									// Playback properties indicate the initial position should not be the
+									// beginning of the media. Seeking is required.
+
+									// Set the seeking parameters to the desired initial position
+									self->m_seeking_data.m_was_paused = pprops.m_start_paused;
+									self->m_seeking_data.m_seek_to_position = pprops.m_start_at_position;
+									self->m_seeking_data.m_seek_format = pos_unit_to_format(pprops.m_start_at_position_unit);
+
+									// We are seeking now
+									self->set_state_nolock(state_seeking);
+
+									// Seek to the defined initial position, but do not switch to any
+									// state afterwards. Instead, let the code below handle state switches.
+									// The idea is that after seeking, the pipeline is in the PAUSED state,
+									// so for the rest of the code below, the situation is the same (since
+									// this switch-case block was entered precisely because the pipeline
+									// switched to the PAUSED state).
+									self->finish_seeking_nolock(false);
+								}
+
+								if (pprops.m_start_paused)
+								{
+									// If playback properties indicate that the media should start in
+									// the paused state, then we are essentially done. Just mark the
+									// state as paused.
+
+									NXPLAY_LOG_MSG(debug, "pipeline reaches the PAUSED state, and current stream is supposed to start in paused state");
+									self->set_state_nolock(state_paused);
+								}
+								else
+								{
+									// Handle buffering state updates if this is a non-live source
+									// If the current stream is not buffering, we can switch to
+									// PLAYING immediately; otherwise, remain at PAUSED until
+									// buffering is done (handled by the GST_MESSAGE_BUFFERING
+									// code below)
+									if (!(self->m_current_stream->is_live()) && self->m_current_stream->is_buffering())
+									{
+										NXPLAY_LOG_MSG(debug, "current stream is still buffering during startup; switching pipeline to buffering state");
+										self->set_state_nolock(state_buffering);
+									}
+									else
+									{
+										NXPLAY_LOG_MSG(debug, "current stream fully buffered or does not need buffering; continuing to playing state");
+										self->set_state_nolock(state_paused);
+										self->set_gstreamer_state_nolock(GST_STATE_PLAYING);
+									}
+								}
 							}
 
 							break;
@@ -1718,7 +1793,7 @@ gboolean main_pipeline::static_bus_watch(GstBus *, GstMessage *p_msg, gpointer p
 							if ((old_gstreamer_state != GST_STATE_PAUSED) && (self->m_seeking_data.m_seek_to_position != GST_CLOCK_TIME_NONE))
 							{
 								NXPLAY_LOG_MSG(debug, "finish seeking");
-								self->finish_seeking_nolock();
+								self->finish_seeking_nolock(true);
 							}
 							break;
 

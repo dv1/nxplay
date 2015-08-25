@@ -30,21 +30,47 @@ std::string get_state_name(states const p_state)
 }
 
 
+playback_properties::playback_properties()
+	: m_start_paused(false)
+	, m_start_at_position(0)
+	, m_start_at_position_unit(position_unit_nanoseconds)
+	, m_buffer_duration(boost::none)
+	, m_buffer_size(boost::none)
+{
+}
+
+
+playback_properties::playback_properties(
+	bool const p_start_paused,
+	gint64 const p_start_at_position,
+	position_units const p_start_at_position_unit,
+	boost::optional < guint64 > const &p_buffer_duration,
+	boost::optional < guint > const &p_buffer_size
+)
+	: m_start_paused(p_start_paused)
+	, m_start_at_position(p_start_at_position)
+	, m_start_at_position_unit(p_start_at_position_unit)
+	, m_buffer_duration(p_buffer_duration)
+	, m_buffer_size(p_buffer_size)
+{
+}
+
+
 pipeline::~pipeline()
 {
 }
 
 
-bool pipeline::play_media(guint64 const p_token, media const &p_media, bool const p_play_now)
+bool pipeline::play_media(guint64 const p_token, media const &p_media, bool const p_play_now, playback_properties const &p_properties)
 {
 	media temp_media(p_media); // create temporary copy which will be moved by the derived class
-	return play_media_impl(p_token, std::move(temp_media), p_play_now);
+	return play_media_impl(p_token, std::move(temp_media), p_play_now, p_properties);
 }
 
 
-bool pipeline::play_media(guint64 const p_token, media &&p_media, bool const p_play_now)
+bool pipeline::play_media(guint64 const p_token, media &&p_media, bool const p_play_now, playback_properties const &p_properties)
 {
-	return play_media_impl(p_token, std::move(p_media), p_play_now);
+	return play_media_impl(p_token, std::move(p_media), p_play_now, p_properties);
 }
 
 

@@ -15,6 +15,7 @@
 #include <string>
 #include <gst/gst.h>
 #include <gst/audio/streamvolume.h>
+#include <boost/optional.hpp>
 #include "media.hpp"
 
 
@@ -71,6 +72,64 @@ enum position_units
 
 /// Returns a string representation of a state; useful for logging
 std::string get_state_name(states const p_state);
+
+
+/// Additional properties for play_media() calls.
+/**
+ * These are optional properties which affect the behavior of play_media().
+ * They make it possible to start playback in paused state, to seek right
+ * when starting playback, and to adjust the streaming buffer size/duration.
+ */
+struct playback_properties
+{
+	/// If true, playback will be initially paused. Default value is false.
+	bool m_start_paused;
+
+	/// If >0, playback will initially start at this position. Default value is 0.
+	gint64 m_start_at_position;
+	/// Unit to use for m_start_at_position. Default value is position_unit_nanoseconds.
+	position_units m_start_at_position_unit;
+
+	/// Values other than boost::none specify the duration capacity of the streaming buffer, in nanoseconds.
+	/**
+	 * If this is not set to boost::none, and if the amount of buffered data reaches this
+	 * duration, then buffering will stop (= reach 100%). If this is boost::none, the default
+	 * capacity value of two seconds will be used.
+	 *
+	 * @note If both m_buffer_size and m_buffer_duration are set to a non-boost::none value,
+	 * then buffering will stop once either of their capacities are reached. If for example
+	 * m_buffer_duration is set to 10 seconds, and m_buffer_size is set to 48 kB, and the stream
+	 * is a 192 kbps MP3 stream, then buffering will reach 100% after 2 seconds already, because
+	 * the m_buffer_size capacity is reached before m_buffer_duration (and 48 kB equals 2 seconds
+	 * of playback at 192 kbps).
+	 *
+	 * Default value is boost::none.
+	 */
+	boost::optional < guint64 > m_buffer_duration;
+	/// Values other than boost::none specify the size capacity of the streaming buffer, in bytes.
+	/**
+	 * If this is not set to boost::none, and if the amount of buffered data reaches this
+	 * size, then buffering will stop (= reach 100%). If this is boost::none, the default
+	 * capacity value of 2 MB will be used.
+	 *
+	 * See the m_buffer_duration documentation for additional notes.
+	 *
+	 * Default value is boost::none.
+	 */
+	boost::optional < guint > m_buffer_size;
+
+	/// Default constructor. Sets the values above to their defaults.
+	playback_properties();
+
+	/// Constructor for explicitely initializing all values.
+	explicit playback_properties(
+		bool const p_start_paused,
+		gint64 const p_start_at_position,
+		position_units const p_start_at_position_unit,
+		boost::optional < guint64 > const &p_buffer_duration,
+		boost::optional < guint > const &p_buffer_size
+	);
+};
 
 
 /// Abstract pipeline interface.
@@ -170,16 +229,20 @@ public:
 	 * @param p_token Token to associate the playback request with
 	 * @param p_media Media to play (either now or later); the media object is copied internally
 	 * @param p_play_now If true, the media must be played right now (see above)
+	 * @param p_buffer_size If set, describes the size of the internal buffer (only used if
+	 *        the internal uridecodebin creates a buffer, for example for HTTP streams)
+	 * @param p_buffer_size_in_nanoseconds If true, the value of p_buffer_size is in nanoseconds,
+	 *        otherwise the value is in bytes
 	 * @return true if the request succeeded, false otherwise (a postponed playback request
 	 *         still returns true!)
 	 */
-	virtual bool play_media(guint64 const p_token, media const &p_media, bool const p_play_now);
+	virtual bool play_media(guint64 const p_token, media const &p_media, bool const p_play_now, playback_properties const &p_properties = playback_properties());
 	/// Overlaoded play_media() function for movable media obejcts
 	/**
 	 * The only difference to the other overload is that p_media is is an rvalue reference.
 	 * Useful to avoid temporary media object copies (this includes their payloads).
 	 */
-	virtual bool play_media(guint64 const p_token, media &&p_media, bool const p_play_now);
+	virtual bool play_media(guint64 const p_token, media &&p_media, bool const p_play_now, playback_properties const &p_properties = playback_properties());
 	/// Stops any current playback and erases any scheduled next media.
 	/**
 	 * If this is called in the idle state, nothing happens. Otherwise, the pipeline will be
@@ -312,7 +375,7 @@ public:
 
 protected:
 	// Derived classes only need to overload this one, and can leave the two play_media() functions alone
-	virtual bool play_media_impl(guint64 const p_token, media &&p_media, bool const p_play_now) = 0;
+	virtual bool play_media_impl(guint64 const p_token, media &&p_media, bool const p_play_now, playback_properties const &p_properties) = 0;
 };
 
 
