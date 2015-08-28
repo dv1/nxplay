@@ -11,6 +11,7 @@
 #include "log.hpp"
 #include "main_pipeline.hpp"
 #include "scope_guard.hpp"
+#include "utility.hpp"
 
 
 namespace nxplay
@@ -98,19 +99,6 @@ std::string message_to_str(GstMessage *p_msg, GstDebugLevel const p_level)
 	}
 
 	return error->message;
-}
-
-
-// Utility function to unref a GstObject if the pointer is non-null
-template < typename T >
-void checked_unref(T* &p_object)
-{
-	if (p_object != nullptr)
-	{
-		gst_object_unref(GST_OBJECT(p_object));
-		p_object = nullptr;
-	
-	}
 }
 
 
