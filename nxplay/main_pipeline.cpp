@@ -508,9 +508,7 @@ main_pipeline::main_pipeline(callbacks const &p_callbacks, GstClockTime const p_
 	, m_pending_gstreamer_state(GST_STATE_VOID_PENDING)
 	, m_pipeline_elem(nullptr)
 	, m_concat_elem(nullptr)
-	, m_volume_elem(nullptr)
 	, m_audiosink_elem(nullptr)
-	, m_volume_iface(nullptr)
 	, m_bus(nullptr)
 	, m_watch_source(nullptr)
 	, m_next_token(0)
@@ -625,41 +623,6 @@ gint64 main_pipeline::get_duration(position_units const p_unit) const
 	return -1;
 }
 
-
-void main_pipeline::set_volume(double const p_new_volume, GstStreamVolumeFormat const p_format)
-{
-	std::unique_lock < std::mutex > lock(m_loop_mutex);
-	if (m_volume_iface != nullptr)
-		gst_stream_volume_set_volume(m_volume_iface, p_format, p_new_volume);
-}
-
-
-double main_pipeline::get_volume(GstStreamVolumeFormat const p_format) const
-{
-	std::unique_lock < std::mutex > lock(m_loop_mutex);
-	if (m_volume_iface != nullptr)
-		return gst_stream_volume_get_volume(m_volume_iface, p_format);
-	else
-		return 1.0;
-}
-
-
-void main_pipeline::set_muted(bool const p_mute)
-{
-	std::unique_lock < std::mutex > lock(m_loop_mutex);
-	if (m_volume_iface != nullptr)
-		gst_stream_volume_set_mute(m_volume_iface, p_mute ? TRUE : FALSE);
-}
-
-
-bool main_pipeline::is_muted() const
-{
-	std::unique_lock < std::mutex > lock(m_loop_mutex);
-	if (m_volume_iface != nullptr)
-		return gst_stream_volume_get_mute(m_volume_iface);
-	else
-		return false;
-}
 
 
 void main_pipeline::force_postpone_tag(std::string const &p_tag, bool const p_postpone)
@@ -839,7 +802,6 @@ bool main_pipeline::initialize_pipeline_nolock()
 	{
 		checked_unref(m_concat_elem);
 		checked_unref(audioconvert_elem);
-		checked_unref(m_volume_elem);
 		checked_unref(m_audiosink_elem);
 	});
 
@@ -871,13 +833,6 @@ bool main_pipeline::initialize_pipeline_nolock()
 		return false;
 	}
 
-	m_volume_elem = gst_element_factory_make("volume", "volume");
-	if (m_volume_elem == nullptr)
-	{
-		NXPLAY_LOG_MSG(error, "could not create volume element");
-		return false;
-	}
-
 	m_audiosink_elem = gst_element_factory_make("autoaudiosink", "audiosink");
 	if (m_audiosink_elem == nullptr)
 	{
@@ -900,7 +855,7 @@ bool main_pipeline::initialize_pipeline_nolock()
 		gst_bin_add(GST_BIN(m_pipeline_elem), obj->get_gst_element());
 	}
 
-	gst_bin_add_many(GST_BIN(m_pipeline_elem), m_concat_elem, audioconvert_elem, audioresample_elem, m_volume_elem, m_audiosink_elem, nullptr);
+	gst_bin_add_many(GST_BIN(m_pipeline_elem), m_concat_elem, audioconvert_elem, audioresample_elem, m_audiosink_elem, nullptr);
 	// no need to guard the elements anymore, since the pipeline
 	// now manages their lifetime
 	elems_guard.unguard();
@@ -917,7 +872,7 @@ bool main_pipeline::initialize_pipeline_nolock()
 		for (auto iter = m_processing_objects.begin() + 1; iter != m_processing_objects.end(); ++iter)
 			gst_element_link((*(iter - 1))->get_gst_element(), (*iter)->get_gst_element());
 
-		gst_element_link_many(m_processing_objects.back()->get_gst_element(), audioconvert_elem, audioresample_elem, m_volume_elem, m_audiosink_elem, nullptr);
+		gst_element_link_many(m_processing_objects.back()->get_gst_element(), audioconvert_elem, audioresample_elem, m_audiosink_elem, nullptr);
 	}
 
 	// Setup the pipeline bus
@@ -935,10 +890,6 @@ bool main_pipeline::initialize_pipeline_nolock()
 
 	// Announce the idle state
 	set_state_nolock(state_idle);
-
-	// find_stream_volume_interface() is not called here, since some elements
-	// won't be able to handle volume until they are in the READY state. Therefore,
-	// this function is called in the bus watch callback instead.
 
 	NXPLAY_LOG_MSG(debug, "pipeline initialized");
 
@@ -983,7 +934,6 @@ void main_pipeline::shutdown_pipeline_nolock(bool const p_set_state)
 	m_pipeline_elem = nullptr;
 	m_concat_elem = nullptr;
 	m_audiosink_elem = nullptr;
-	m_volume_iface = nullptr;
 
 	NXPLAY_LOG_MSG(debug, "pipeline shut down");
 }
@@ -1721,13 +1671,6 @@ gboolean main_pipeline::static_bus_watch(GstBus *, GstMessage *p_msg, gpointer p
 				{
 					switch (new_gstreamer_state)
 					{
-						case GST_STATE_READY:
-							// This is the right place to check for volume interfaces.
-							// Some elements might not be able to do this until they are
-							// switched to the READY state.
-							self->m_volume_iface = self->find_stream_volume_interface();
-							break;
-
 						case GST_STATE_PAUSED:
 							// Update durations. With some media, the update
 							// must happen here.
@@ -2143,36 +2086,6 @@ gboolean main_pipeline::static_bus_watch(GstBus *, GstMessage *p_msg, gpointer p
 	}
 
 	return TRUE;
-}
-
-
-GstStreamVolume* main_pipeline::find_stream_volume_interface()
-{
-	// First, check if the audio sink can handle volume.
-	// Then, try using the soft-volume element as fallback.
-
-	GstElement *volume_element = nullptr;
-
-	if ((volume_element == nullptr) && G_TYPE_CHECK_INSTANCE_TYPE(m_audiosink_elem, GST_TYPE_STREAM_VOLUME))
-		volume_element = m_audiosink_elem;
-
-	if ((volume_element == nullptr) && GST_IS_BIN(m_audiosink_elem))
-		volume_element = gst_bin_get_by_interface(GST_BIN(m_audiosink_elem), GST_TYPE_STREAM_VOLUME);
-
-	if (volume_element == nullptr)
-		volume_element = m_volume_elem;
-
-	if (volume_element != nullptr)
-	{
-		gchar *name = gst_element_get_name(volume_element);
-		NXPLAY_LOG_MSG(debug, "element " << ((name != nullptr) ? name : "(NULL)") << " with volume interface found");
-		return GST_STREAM_VOLUME(volume_element);
-	}
-	else
-	{
-		NXPLAY_LOG_MSG(warning, "element with volume interface not found");
-		return nullptr;
-	}
 }
 
 

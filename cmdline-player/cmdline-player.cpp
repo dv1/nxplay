@@ -6,6 +6,7 @@
 #include <nxplay/log.hpp>
 #include <nxplay/init_gstreamer.hpp>
 #include <nxplay/main_pipeline.hpp>
+#include <nxplay/soft_volume_control.hpp>
 #include "tokenizer.hpp"
 
 extern "C"
@@ -185,7 +186,8 @@ int main(int argc, char *argv[])
 			std::cerr << "New tags for current media with URI " << p_current_media.get_uri() << " and token " << p_token << ": " << nxplay::to_string(p_tag_list) << "\n";
 		};
 
-		nxplay::main_pipeline pipeline(callbacks);
+		nxplay::soft_volume_control volobj;
+		nxplay::main_pipeline pipeline(callbacks, GST_SECOND * 5, 500, false, { &volobj });
 
 
 		// Set up command map
@@ -245,7 +247,7 @@ int main(int argc, char *argv[])
 			[&](cmdline_player::tokens const &p_tokens)
 			{
 				double volume = std::stod(p_tokens[1]);
-				pipeline.set_volume(volume, GST_STREAM_VOLUME_FORMAT_LINEAR);
+				volobj.set_volume(volume);
 				return true;
 			},
 			1, "<volume>",
@@ -255,7 +257,7 @@ int main(int argc, char *argv[])
 		{
 			[&](cmdline_player::tokens const &)
 			{
-				std::cerr << "Current volume: " << pipeline.get_volume(GST_STREAM_VOLUME_FORMAT_LINEAR) << "\n";
+				std::cerr << "Current volume: " << volobj.get_volume() << "\n";
 				return true;
 			},
 			0, "",
@@ -266,7 +268,7 @@ int main(int argc, char *argv[])
 			[&](cmdline_player::tokens const &p_tokens)
 			{
 				bool mute = (p_tokens[1] == "yes");
-				pipeline.set_muted(mute);
+				volobj.set_muted(mute);
 				return true;
 			},
 			1, "<mute yes/no>",
@@ -276,7 +278,7 @@ int main(int argc, char *argv[])
 		{
 			[&](cmdline_player::tokens const &)
 			{
-				std::cerr << "Is currently muted: " << (pipeline.is_muted() ? "yes" : "no") << "\n";
+				std::cerr << "Is currently muted: " << (volobj.is_muted() ? "yes" : "no") << "\n";
 				return true;
 			},
 			0, "",

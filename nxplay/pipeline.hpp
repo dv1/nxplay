@@ -14,7 +14,6 @@
 
 #include <string>
 #include <gst/gst.h>
-#include <gst/audio/streamvolume.h>
 #include <boost/optional.hpp>
 #include "media.hpp"
 
@@ -323,38 +322,6 @@ public:
 	 *         be determined (at least not with the given unit)
 	 */
 	virtual gint64 get_duration(position_units const p_unit = position_unit_nanoseconds) const = 0;
-
-	/// Sets the current volume, with the given format.
-	/**
-	 * See the GStreamer documentation for GstStreamVolume for details about the format.
-	 * If nothing inside the pipeline supports volume, this call is ignored.
-	 *
-	 * @param p_new_volume New volume to use
-	 * @param p_format Format of the new volume to use
-	 */
-	virtual void set_volume(double const p_new_volume, GstStreamVolumeFormat const p_format = GST_STREAM_VOLUME_FORMAT_LINEAR) = 0;
-	/// Retrieves the current volume in the given format.
-	/**
-	 * If nothing inside the pipeline supports volume, this call returns 1.0.
-	 *
-	 * @param p_format Required format for the return value
-	 * @return Current volume, or 1.0 if volume is not supported by the pipeline
-	 */
-	virtual double get_volume(GstStreamVolumeFormat const p_format = GST_STREAM_VOLUME_FORMAT_LINEAR) const = 0;
-	/// Mutes/unmutes the audio playback
-	/**
-	 * If nothing inside the pipeline supports muting, this call is ignored.
-	 *
-	 * @param p_mute true if audio shall be muted
-	 */
-	virtual void set_muted(bool const p_mute) = 0;
-	/// Determines if audio playback is currently muted or not.
-	/**
-	 * If nothing inside the pipeline supports muting, this call return false.
-	 *
-	 * @return true if audio playback is currently muted, false otherwise
-	 */
-	virtual bool is_muted() const = 0;
 
 	/// Adds/removes a tag to/from the set of forcibly postponed ones.
 	/**

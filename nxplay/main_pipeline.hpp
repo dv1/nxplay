@@ -302,11 +302,6 @@ public:
 
 	virtual gint64 get_duration(position_units const p_unit) const override;
 
-	virtual void set_volume(double const p_new_volume, GstStreamVolumeFormat const p_format) override;
-	virtual double get_volume(GstStreamVolumeFormat const p_format) const override;
-	virtual void set_muted(bool const p_mute) override;
-	virtual bool is_muted() const override;
-
 	virtual void force_postpone_tag(std::string const &p_tag, bool const p_postpone);
 
 
@@ -477,11 +472,9 @@ private:
 
 	static GstBusSyncReply static_bus_sync_handler(GstBus *p_bus, GstMessage *p_msg, gpointer p_data);
 	static gboolean static_bus_watch(GstBus *p_bus, GstMessage *p_msg, gpointer p_data);
-	GstStreamVolume* find_stream_volume_interface();
 
 	GstState m_current_gstreamer_state, m_pending_gstreamer_state;
-	GstElement *m_pipeline_elem, *m_concat_elem, *m_volume_elem, *m_audiosink_elem;
-	GstStreamVolume *m_volume_iface;
+	GstElement *m_pipeline_elem, *m_concat_elem, *m_audiosink_elem;
 	GstBus *m_bus;
 	GSource *m_watch_source;
 
