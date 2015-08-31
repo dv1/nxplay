@@ -493,7 +493,7 @@ void main_pipeline::stream::static_element_added_callback(GstElement *, GstEleme
 
 
 
-main_pipeline::main_pipeline(callbacks const &p_callbacks, GstClockTime const p_needs_next_media_time, guint const p_update_interval, bool const p_postpone_all_tags)
+main_pipeline::main_pipeline(callbacks const &p_callbacks, GstClockTime const p_needs_next_media_time, guint const p_update_interval, bool const p_postpone_all_tags, processing_objects const &p_processing_objects)
 	: m_state(state_idle)
 	, m_duration_in_nanoseconds(-1)
 	, m_duration_in_bytes(-1)
@@ -517,6 +517,7 @@ main_pipeline::main_pipeline(callbacks const &p_callbacks, GstClockTime const p_
 	, m_thread_loop(nullptr)
 	, m_thread_loop_context(nullptr)
 	, m_callbacks(p_callbacks)
+	, m_processing_objects(p_processing_objects)
 {
 	// By default, add the bitrate tags to the list of
 	// forcibly postponed ones, since these can be frequently
@@ -886,13 +887,38 @@ bool main_pipeline::initialize_pipeline_nolock()
 
 	g_object_set(G_OBJECT(audioresample_elem), "quality", 0, nullptr);
 
+	for (auto obj : m_processing_objects)
+	{
+		if (!(obj->setup()))
+		{
+			NXPLAY_LOG_MSG(error, "error while setting up processing object");
+			return false;
+		}
+
+		g_assert(obj->get_gst_element() != nullptr);
+
+		gst_bin_add(GST_BIN(m_pipeline_elem), obj->get_gst_element());
+	}
+
 	gst_bin_add_many(GST_BIN(m_pipeline_elem), m_concat_elem, audioconvert_elem, audioresample_elem, m_volume_elem, m_audiosink_elem, nullptr);
 	// no need to guard the elements anymore, since the pipeline
 	// now manages their lifetime
 	elems_guard.unguard();
 
 	// Link all of the elements together
-	gst_element_link_many(m_concat_elem, audioconvert_elem, audioresample_elem, m_volume_elem, m_audiosink_elem, nullptr);
+	if (m_processing_objects.empty())
+	{
+		gst_element_link_many(m_concat_elem, audioconvert_elem, audioresample_elem, m_audiosink_elem, nullptr);
+	}
+	else
+	{
+		gst_element_link(m_concat_elem, m_processing_objects.front()->get_gst_element());
+
+		for (auto iter = m_processing_objects.begin() + 1; iter != m_processing_objects.end(); ++iter)
+			gst_element_link((*(iter - 1))->get_gst_element(), (*iter)->get_gst_element());
+
+		gst_element_link_many(m_processing_objects.back()->get_gst_element(), audioconvert_elem, audioresample_elem, m_volume_elem, m_audiosink_elem, nullptr);
+	}
 
 	// Setup the pipeline bus
 	m_bus = gst_pipeline_get_bus(GST_PIPELINE(m_pipeline_elem));
@@ -943,6 +969,12 @@ void main_pipeline::shutdown_pipeline_nolock(bool const p_set_state)
 	g_source_destroy(m_watch_source);
 	g_source_unref(m_watch_source);
 	gst_object_unref(GST_OBJECT(m_bus));
+
+	for (auto obj : m_processing_objects)
+	{
+		gst_bin_remove(GST_BIN(m_pipeline_elem), obj->get_gst_element());
+		obj->teardown();
+	}
 
 	// Cleanup and unref the pipeline
 	gst_bin_remove_many(GST_BIN(m_pipeline_elem), m_concat_elem, m_audiosink_elem, nullptr);

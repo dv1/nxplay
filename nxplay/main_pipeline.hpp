@@ -21,6 +21,7 @@
 #include <boost/optional.hpp>
 #include "pipeline.hpp"
 #include "tag_list.hpp"
+#include "processing_object.hpp"
 
 
 /** nxplay */
@@ -260,9 +261,15 @@ public:
 		media_about_to_end_callback m_media_about_to_end_callback;
 	};
 
+	typedef std::vector < processing_object* > processing_objects;
+
 	/// Constructor. Sets up the callbacks and initializes the pipeline.
 	/**
 	 * After the constructor finishes, the pipeline is in the idle state.
+	 *
+	 * @note The pipeline does not take ownership over any processing objects.
+	 * These objects must exist for at least as long as the main_pipeline
+	 * instance itself exists.
 	 *
 	 * @param p_callbacks Callbacks to use in this pipeline
 	 * @param p_needs_next_media_time If current media has only this much time to
@@ -275,8 +282,10 @@ public:
 	 *        periodic updates; if false, they happen immediately and
 	 *        asynchronously (comparable to calling force_postpone_tag()
 	 *        for all possible tags with p_postpone = true)
+	 * @param p_processing_objects Optional list of processing objects to insert
+	 *        right before the output sink
 	 */
-	explicit main_pipeline(callbacks const &p_callbacks, GstClockTime const p_needs_next_media_time = GST_SECOND * 5, guint const p_update_interval = 500, bool const p_postpone_all_tags = false);
+	explicit main_pipeline(callbacks const &p_callbacks, GstClockTime const p_needs_next_media_time = GST_SECOND * 5, guint const p_update_interval = 500, bool const p_postpone_all_tags = false, processing_objects const &p_processing_objects = processing_objects());
 	~main_pipeline();
 
 	virtual guint64 get_new_token() override;
@@ -520,6 +529,7 @@ private:
 	// miscellaneous
 
 	callbacks m_callbacks;
+	processing_objects m_processing_objects;
 };
 
 
