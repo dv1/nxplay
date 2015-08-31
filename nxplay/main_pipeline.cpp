@@ -191,18 +191,16 @@ main_pipeline::stream::stream(main_pipeline &p_pipeline, guint64 const p_token, 
 	g_signal_connect(G_OBJECT(m_uridecodebin_elem), "element-added", G_CALLBACK(static_element_added_callback), gpointer(this));
 
 	// Configure buffer size and duration if necessary
+
 	if (p_properties.m_buffer_duration)
-	{
-		gint64 duration = *(p_properties.m_buffer_duration);
-		NXPLAY_LOG_MSG(debug, "setting buffer duration to a maximum average of " << duration << " nanoseconds");
-		g_object_set(G_OBJECT(m_uridecodebin_elem), "buffer-duration", duration, nullptr);
-	}
+		set_buffer_duration_limit(*(p_properties.m_buffer_duration));
+	else
+		set_buffer_duration_limit(boost::none);
+
 	if (p_properties.m_buffer_size)
-	{
-		gint size = *(p_properties.m_buffer_size);
-		NXPLAY_LOG_MSG(debug, "setting buffer size to a maximum average of " << size << " bytes");
-		g_object_set(G_OBJECT(m_uridecodebin_elem), "buffer-size", size, nullptr);
-	}
+		set_buffer_size_limit(*(p_properties.m_buffer_size));
+	else
+		set_buffer_size_limit(boost::none);
 
 	// Do not sync states with parent here just yet, since the static_new_pad_callback
 	// does checks to see if this is the current media. Let the caller assign this new
@@ -347,7 +345,8 @@ bool main_pipeline::stream::contains_object(GstObject *p_object)
 
 void main_pipeline::stream::set_buffer_size_limit(boost::optional < guint > const &p_new_size)
 {
-	gint size = p_new_size ? gint(*p_new_size) : gint(-1);
+	gint size = p_new_size ? gint(*p_new_size) : gint(2 * 1024 * 1024);
+	NXPLAY_LOG_MSG(debug, "setting buffer size to a maximum average of " << size << " bytes");
 	g_object_set(G_OBJECT(m_uridecodebin_elem), "buffer-size", size, nullptr);
 	if (m_queue_elem != nullptr)
 		g_object_set(G_OBJECT(m_queue_elem), "max-size-bytes", size, nullptr);
@@ -356,7 +355,8 @@ void main_pipeline::stream::set_buffer_size_limit(boost::optional < guint > cons
 
 void main_pipeline::stream::set_buffer_duration_limit(boost::optional < guint64 > const &p_new_duration)
 {
-	gint64 duration = p_new_duration ? gint64(*p_new_duration) : gint64(-1);
+	gint64 duration = p_new_duration ? gint64(*p_new_duration) : gint64(GST_SECOND * 2);
+	NXPLAY_LOG_MSG(debug, "setting buffer duration to a maximum average of " << duration << " nanoseconds");
 	g_object_set(G_OBJECT(m_uridecodebin_elem), "buffer-duration", duration, nullptr);
 	if (m_queue_elem != nullptr)
 		g_object_set(G_OBJECT(m_queue_elem), "max-size-time", duration, nullptr);
