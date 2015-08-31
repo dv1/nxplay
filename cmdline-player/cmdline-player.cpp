@@ -120,14 +120,14 @@ int main(int argc, char *argv[])
 		{
 			std::cerr << "State change: old: " << nxplay::get_state_name(p_old_state) << " new: " << nxplay::get_state_name(p_new_state) << "\n";
 		};
-		callbacks.m_buffering_updated_callback = [=](nxplay::media const &p_media, guint64 const p_token, bool const p_is_current_media, unsigned int const p_percentage, boost::optional < guint > const p_level)
+		callbacks.m_buffering_updated_callback = [=](nxplay::media const &p_media, guint64 const p_token, bool const p_is_current_media, unsigned int const p_percentage, boost::optional < guint > const p_level, guint const p_limit)
 		{
 			std::cerr << "Buffering: " << p_percentage << "% (";
 			if (p_level)
 				std::cerr << *p_level;
 			else
 				std::cerr << "<undefined>";
-			std::cerr << " bytes)  media uri: " << p_media.get_uri() << " token: " << p_token << "  current: " << p_is_current_media << "\n";
+			std::cerr << " bytes)  media uri: " << p_media.get_uri() << " token: " << p_token << "  current: " << p_is_current_media << " limit: " << p_limit << "\n";
 		};
 		callbacks.m_duration_updated_callback = [](nxplay::media const &p_current_media, guint64 const p_token, gint64 const p_new_duration, nxplay::position_units const p_unit)
 		{
@@ -153,9 +153,9 @@ int main(int argc, char *argv[])
 					break;
 			}
 		};
-		callbacks.m_buffer_level_callback = [](nxplay::media const &p_current_media, guint64 const p_token, guint const p_level)
+		callbacks.m_buffer_level_callback = [](nxplay::media const &p_current_media, guint64 const p_token, guint const p_level, guint const p_limit)
 		{
-			std::cerr << "Buffer level of media with URI " << p_current_media.get_uri() << " and token " << p_token << ": " << p_level << " bytes\n";
+			std::cerr << "Buffer level of media with URI " << p_current_media.get_uri() << " and token " << p_token << ": " << p_level << " bytes " << "  limit: " << p_limit << " bytes\n";
 		};
 		callbacks.m_media_about_to_end_callback = [](nxplay::media const &p_current_media, guint64 const p_token)
 		{

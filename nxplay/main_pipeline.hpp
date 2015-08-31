@@ -128,22 +128,29 @@ public:
 	 * @param p_current_media Const reference to internal new current media
 	 * @param p_token Associated playback token (see pipeline::play_media() )
 	 * @param p_level Fill level of the current stream's buffer, in bytes
+	 * @param p_limit Current level limit, in bytes
 	 */
-	typedef std::function < void(media const &p_current_media, guint64 const p_token, guint const p_level) > buffer_level_callback;
+	typedef std::function < void(media const &p_current_media, guint64 const p_token, guint const p_level, guint const p_limit) > buffer_level_callback;
 	/// Notifies about buffering updates.
 	/**
 	 * When media needs to buffer, this callback is invoked. This gives applications
 	 * the chance to display a wait indicator if p_is_current_media is true.
 	 *
-	 * @note p_level is of type boost::optional < guint > . if no fill level is known,
+	 * p_level is of type boost::optional < guint > . if no fill level is known,
 	 * p_level will have the value boost::none. If it does not have this value, the
 	 * fill level in bytes can be retrieved by using the "*p_level" expression.
 	 *
-	 * @note This can even be called for current media while it is playing. This happens
+	 * This function can even be called for current media while it is playing. This happens
 	 * if buffering is going on with live sources. Playback cannot be paused if the
 	 * media source is live, so the pipeline state won't switch to state_buffering then.
 	 * Instead, it will stay at state_playing. Buffering messages with live sources are
 	 * a rough indicator of an internal fill level, nothing more.
+	 *
+	 * The current level limit is whatever value is lower: the configured buffer size limit,
+	 * or the value estimated from the bitrate and the duration limit. The latter is initially
+	 * unavailable, as the bitrate isn't known until after a certain amount of data has been
+	 * read. In real-world scenarios, this means that p_limit can change once buffering has
+	 * reached 100% for the first time since the current media has started playback.
 	 *
 	 * @param p_media Media that is buffering
 	 * @param p_token Associated playback token (see pipeline::play_media() )
@@ -152,8 +159,9 @@ public:
 	 * @param p_percentage Buffering percentage (0-100)
 	 * @param p_level Fill level of the current stream's buffer, in bytes, or boost::none
 	 *        if no current fill level is known
+	 * @param p_limit Current level limit, in bytes
 	 */
-	typedef std::function < void(media const &p_media, guint64 const p_token, bool const p_is_current_media, unsigned int const p_percentage, boost::optional < guint > const p_level) > buffering_updated_callback;
+	typedef std::function < void(media const &p_media, guint64 const p_token, bool const p_is_current_media, unsigned int const p_percentage, boost::optional < guint > const p_level, guint const p_limit) > buffering_updated_callback;
 	/// Notifies about a newly determined duration value for the current media.
 	/**
 	 * Duration updates might happen more than once for the same current media. With
@@ -408,7 +416,8 @@ private:
 		void set_buffer_duration_limit(boost::optional < guint64 > const &p_new_duration);
 
 		boost::optional < guint > get_current_buffer_level() const;
-		boost::optional < guint > get_buffer_size() const;
+
+		guint get_effective_buffer_size_limit() const;
 
 		void set_buffering(bool const p_flag);
 		bool is_buffering() const;
@@ -422,6 +431,9 @@ private:
 	private:
 		static void static_new_pad_callback(GstElement *p_uridecodebin, GstPad *p_pad, gpointer p_data);
 		static void static_element_added_callback(GstElement *p_uridecodebin, GstElement *p_element, gpointer p_data);
+		static GstPadProbeReturn static_tag_probe(GstPad *p_pad, GstPadProbeInfo *p_info, gpointer p_data);
+
+		void update_buffer_limits();
 
 		main_pipeline &m_pipeline;
 		guint64 m_token;
@@ -434,6 +446,11 @@ private:
 		bool m_is_live;
 		bool m_is_live_status_known;
 		bool m_is_seekable;
+
+		guint m_bitrate;
+		guint64 m_buffer_duration_limit;
+		guint m_buffer_size_limit;
+		guint m_effective_buffer_size_limit;
 
 		// Used in the static_new_pad_callback and in the destructor,
 		// to prevent both from running at the same time (this is a corner

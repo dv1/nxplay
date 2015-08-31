@@ -22,8 +22,10 @@ namespace
 {
 
 
-static char const *stream_eos_msg_name = "nxplay-stream-eos";
-static char const *element_shutdown_marker = "nxplay-element-shutdown";
+char const *stream_eos_msg_name = "nxplay-stream-eos";
+char const *element_shutdown_marker = "nxplay-element-shutdown";
+guint const buffer_size_limit_default = 1024 * 1024 * 2;
+guint64 const buffer_duration_limit_default = GST_SECOND * 2;
 
 
 GstFormat pos_unit_to_format(position_units const p_unit)
@@ -144,6 +146,10 @@ main_pipeline::stream::stream(main_pipeline &p_pipeline, guint64 const p_token, 
 	, m_is_live(false)
 	, m_is_live_status_known(false)
 	, m_is_seekable(false)
+	, m_bitrate(0)
+	, m_buffer_duration_limit(buffer_duration_limit_default)
+	, m_buffer_size_limit(buffer_size_limit_default)
+	, m_effective_buffer_size_limit(0)
 {
 	assert(m_container_bin != nullptr);
 
@@ -182,6 +188,15 @@ main_pipeline::stream::stream(main_pipeline &p_pipeline, guint64 const p_token, 
 	GstPadTemplate *concat_sinkpad_template = gst_element_class_get_pad_template(GST_ELEMENT_GET_CLASS(m_concat_elem), "sink_%u");
 	m_concat_sinkpad = gst_element_request_pad(m_concat_elem, concat_sinkpad_template, nullptr, nullptr);
 	gst_pad_link(m_identity_srcpad, m_concat_sinkpad);
+
+	// Install srcpad probe to intercept bitrate tags
+	gst_pad_add_probe(
+		m_identity_srcpad,
+		GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM,
+		static_tag_probe,
+		gpointer(this),
+		nullptr
+	);
 
 	// "async-handling" has to be set to TRUE to ensure no internal async state changes
 	// "escape" from the uridecobin and affect the rest of the pipeline (otherwise, the
@@ -345,21 +360,15 @@ bool main_pipeline::stream::contains_object(GstObject *p_object)
 
 void main_pipeline::stream::set_buffer_size_limit(boost::optional < guint > const &p_new_size)
 {
-	gint size = p_new_size ? gint(*p_new_size) : gint(2 * 1024 * 1024);
-	NXPLAY_LOG_MSG(debug, "setting buffer size to a maximum average of " << size << " bytes");
-	g_object_set(G_OBJECT(m_uridecodebin_elem), "buffer-size", size, nullptr);
-	if (m_queue_elem != nullptr)
-		g_object_set(G_OBJECT(m_queue_elem), "max-size-bytes", size, nullptr);
+	m_buffer_size_limit = p_new_size ? *p_new_size : buffer_size_limit_default;
+	update_buffer_limits();
 }
 
 
 void main_pipeline::stream::set_buffer_duration_limit(boost::optional < guint64 > const &p_new_duration)
 {
-	gint64 duration = p_new_duration ? gint64(*p_new_duration) : gint64(GST_SECOND * 2);
-	NXPLAY_LOG_MSG(debug, "setting buffer duration to a maximum average of " << duration << " nanoseconds");
-	g_object_set(G_OBJECT(m_uridecodebin_elem), "buffer-duration", duration, nullptr);
-	if (m_queue_elem != nullptr)
-		g_object_set(G_OBJECT(m_queue_elem), "max-size-time", duration, nullptr);
+	m_buffer_duration_limit = p_new_duration ? *p_new_duration : buffer_duration_limit_default;
+	update_buffer_limits();
 }
 
 
@@ -376,18 +385,9 @@ boost::optional < guint > main_pipeline::stream::get_current_buffer_level() cons
 }
 
 
-boost::optional < guint > main_pipeline::stream::get_buffer_size() const
+guint main_pipeline::stream::get_effective_buffer_size_limit() const
 {
-	if (m_queue_elem != nullptr)
-	{
-		gint64 buffer_size = 0;
-		g_object_get(G_OBJECT(m_uridecodebin_elem), "buffer-duration", &buffer_size, nullptr);
-		NXPLAY_LOG_MSG(debug, "XXX " << buffer_size);
-		if (buffer_size >= 0)
-			return guint(buffer_size);
-	}
-
-	return boost::none;
+	return m_effective_buffer_size_limit;
 }
 
 
@@ -504,9 +504,89 @@ void main_pipeline::stream::static_element_added_callback(GstElement *, GstEleme
 	{
 		NXPLAY_LOG_MSG(debug, "found queue element \"" << name_cstr << "\"");
 		self->m_queue_elem = p_element;
+
+		// Queue is now available; update buffer limits to make sure the queue
+		// is configured with the computed limit values
+		self->update_buffer_limits();
 	}
 
 	g_free(name_cstr);
+}
+
+
+GstPadProbeReturn main_pipeline::stream::static_tag_probe(GstPad *, GstPadProbeInfo *p_info, gpointer p_data)
+{
+	stream *self = static_cast < stream* > (p_data);
+
+	if (G_UNLIKELY((p_info->type & GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM) == 0))
+		return GST_PAD_PROBE_OK;
+
+	GstEvent *event = gst_pad_probe_info_get_event(p_info);
+	switch (GST_EVENT_TYPE(event))
+	{
+		case GST_EVENT_TAG:
+		{
+			if (self->m_bitrate == 0)
+			{
+				GstTagList *tag_list;
+				gst_event_parse_tag(GST_PAD_PROBE_INFO_EVENT(p_info), &tag_list);
+
+				guint bitrate = 0;
+				if (gst_tag_list_get_uint_index(tag_list, GST_TAG_NOMINAL_BITRATE, 0, &bitrate) ||
+				    gst_tag_list_get_uint_index(tag_list, GST_TAG_BITRATE, 0, &bitrate))
+				{
+					NXPLAY_LOG_MSG(debug, "Found bitrate: " << bitrate);
+					self->m_bitrate = bitrate;
+
+					// Bitrate found; update buffer limits, since now it can
+					// actually estimate a size limit out of duration & bitrate
+					self->update_buffer_limits();
+				}
+			}
+
+			break;
+		};
+
+		default:
+			break;
+	}
+
+	return GST_PAD_PROBE_OK;
+}
+
+
+void main_pipeline::stream::update_buffer_limits()
+{
+	guint64 calc_size_limit = 0;
+
+	if ((m_bitrate != 0) && (m_buffer_duration_limit > 0))
+	{
+		calc_size_limit = gst_util_uint64_scale_int(m_buffer_duration_limit, m_bitrate / 8, GST_SECOND);
+		NXPLAY_LOG_MSG(debug, "estimated a size limit of " << calc_size_limit << " bytes out of a bitrate of " << m_bitrate << " bps");
+		if (calc_size_limit > G_MAXUINT)
+			calc_size_limit = G_MAXUINT;
+	}
+
+	m_effective_buffer_size_limit = (calc_size_limit == 0) ? m_buffer_size_limit : std::min(m_buffer_size_limit, guint(calc_size_limit));
+
+	NXPLAY_LOG_MSG(debug, "setting stream buffer limits:  size: " << m_effective_buffer_size_limit << " bytes  duration: " << m_buffer_duration_limit << " nanoseconds");
+
+	g_object_set(
+		G_OBJECT(m_uridecodebin_elem),
+		"buffer-duration", m_buffer_duration_limit,
+		"buffer-size", m_effective_buffer_size_limit,
+		nullptr
+	);
+
+	if (m_queue_elem != nullptr)
+	{
+		g_object_set(
+			G_OBJECT(m_queue_elem),
+			"max-size-time", m_buffer_duration_limit,
+			"max-size-bytes", m_effective_buffer_size_limit,
+			nullptr
+		);
+	}
 }
 
 
@@ -1440,8 +1520,8 @@ gboolean main_pipeline::static_timeout_cb(gpointer p_data)
 	self->m_postponed_tags_list = tag_list();
 
 	// Do updates if there is a pipeline, pipeline is playing, there is a current
-	// stream, and there is either a position_updated or media_about_to_end callback.
-	if ((self->m_pipeline_elem != nullptr) && (self->m_state == state_playing) && (self->m_current_stream != nullptr) && (self->m_callbacks.m_position_updated_callback || self->m_callbacks.m_media_about_to_end_callback))
+	// stream, and there is a position_updated, buffer_level, or media_about_to_end callback.
+	if ((self->m_pipeline_elem != nullptr) && (self->m_state == state_playing) && (self->m_current_stream != nullptr) && (self->m_callbacks.m_position_updated_callback || self->m_callbacks.m_buffer_level_callback || self->m_callbacks.m_media_about_to_end_callback))
 	{
 		if (self->m_callbacks.m_buffer_level_callback)
 		{
@@ -1451,35 +1531,39 @@ gboolean main_pipeline::static_timeout_cb(gpointer p_data)
 				self->m_callbacks.m_buffer_level_callback(
 					self->m_current_stream->get_media(),
 					self->m_current_stream->get_token(),
-					*cur_level
+					*cur_level,
+					self->m_current_stream->get_effective_buffer_size_limit()
 				);
 			}
 		}
 
-		// TODO: also do BYTES queries?
-        	gint64 position;
-	        if (gst_element_query_position(GST_ELEMENT(self->m_pipeline_elem), GST_FORMAT_TIME, &position))
+		if (self->m_callbacks.m_position_updated_callback || self->m_callbacks.m_media_about_to_end_callback)
 		{
-			// Notify about the new position if the callback is set
-			if (self->m_callbacks.m_position_updated_callback)
-				self->m_callbacks.m_position_updated_callback(self->m_current_stream->get_media(), self->m_current_stream->get_token(), position, position_unit_nanoseconds);
-
-			// If the current position is close enough to the duration,
-			// and if a media_about_to_end callback is set, and if the callback
-			// hasn't been called before for this media, notify
-			if (!(self->m_block_abouttoend_notifications) &&
-			    self->m_callbacks.m_media_about_to_end_callback &&
-			    self->m_current_stream && (self->m_duration_in_nanoseconds != -1) &&
-			    (GST_CLOCK_DIFF(position, self->m_duration_in_nanoseconds) < gint64(self->m_needs_next_media_time))
-			)
+			// TODO: also do BYTES queries?
+			gint64 position;
+			if (gst_element_query_position(GST_ELEMENT(self->m_pipeline_elem), GST_FORMAT_TIME, &position))
 			{
-				// Raise the block flag to make sure the callback isn't called repeatedly
-				self->m_block_abouttoend_notifications = true;
-				self->m_callbacks.m_media_about_to_end_callback(self->m_current_stream->get_media(), self->m_current_stream->get_token());
+				// Notify about the new position if the callback is set
+				if (self->m_callbacks.m_position_updated_callback)
+					self->m_callbacks.m_position_updated_callback(self->m_current_stream->get_media(), self->m_current_stream->get_token(), position, position_unit_nanoseconds);
+
+				// If the current position is close enough to the duration,
+				// and if a media_about_to_end callback is set, and if the callback
+				// hasn't been called before for this media, notify
+				if (!(self->m_block_abouttoend_notifications) &&
+				    self->m_callbacks.m_media_about_to_end_callback &&
+				    self->m_current_stream && (self->m_duration_in_nanoseconds != -1) &&
+				    (GST_CLOCK_DIFF(position, self->m_duration_in_nanoseconds) < gint64(self->m_needs_next_media_time))
+				)
+				{
+					// Raise the block flag to make sure the callback isn't called repeatedly
+					self->m_block_abouttoend_notifications = true;
+					self->m_callbacks.m_media_about_to_end_callback(self->m_current_stream->get_media(), self->m_current_stream->get_token());
+				}
 			}
+			else
+				NXPLAY_LOG_MSG(info, "could not query position");
 		}
-		else
-			NXPLAY_LOG_MSG(info, "could not query position");
 	}
 
 	return G_SOURCE_CONTINUE;
@@ -2066,7 +2150,8 @@ gboolean main_pipeline::static_bus_watch(GstBus *, GstMessage *p_msg, gpointer p
 						stream_->get_token(),
 						is_current,
 						percent,
-						stream_->get_current_buffer_level()
+						stream_->get_current_buffer_level(),
+						stream_->get_effective_buffer_size_limit()
 					);
 				}
 			}
