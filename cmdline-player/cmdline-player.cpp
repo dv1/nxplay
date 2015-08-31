@@ -242,6 +242,28 @@ int main(int argc, char *argv[])
 			0, "",
 			"prints the curent playback position in milliseconds"
 		};
+		commands["setbufsizelimit"] =
+		{
+			[&](cmdline_player::tokens const &p_tokens)
+			{
+				guint size = std::stol(p_tokens[1]);
+				pipeline.set_buffer_size_limit(size);
+				return true;
+			},
+			1, "<buffer size>",
+			"sets the size limit of the current stream's buffer, in bytes"
+		};
+		commands["setbufdurlimit"] =
+		{
+			[&](cmdline_player::tokens const &p_tokens)
+			{
+				guint64 duration = std::stoll(p_tokens[1]) * GST_MSECOND;
+				pipeline.set_buffer_duration_limit(duration);
+				return true;
+			},
+			1, "<buffer size>",
+			"sets the duration limit of the current stream's buffer, in milliseconds"
+		};
 		commands["setvolume"] =
 		{
 			[&](cmdline_player::tokens const &p_tokens)

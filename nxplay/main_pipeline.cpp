@@ -345,6 +345,24 @@ bool main_pipeline::stream::contains_object(GstObject *p_object)
 }
 
 
+void main_pipeline::stream::set_buffer_size_limit(boost::optional < guint > const &p_new_size)
+{
+	gint size = p_new_size ? gint(*p_new_size) : gint(-1);
+	g_object_set(G_OBJECT(m_uridecodebin_elem), "buffer-size", size, nullptr);
+	if (m_queue_elem != nullptr)
+		g_object_set(G_OBJECT(m_queue_elem), "max-size-bytes", size, nullptr);
+}
+
+
+void main_pipeline::stream::set_buffer_duration_limit(boost::optional < guint64 > const &p_new_duration)
+{
+	gint64 duration = p_new_duration ? gint64(*p_new_duration) : gint64(-1);
+	g_object_set(G_OBJECT(m_uridecodebin_elem), "buffer-duration", duration, nullptr);
+	if (m_queue_elem != nullptr)
+		g_object_set(G_OBJECT(m_queue_elem), "max-size-time", duration, nullptr);
+}
+
+
 boost::optional < guint > main_pipeline::stream::get_current_buffer_level() const
 {
 	if (m_queue_elem != nullptr)
@@ -543,6 +561,22 @@ main_pipeline::~main_pipeline()
 
 	// Now stop the thread with the GLib mainloop
 	stop_thread();
+}
+
+
+void main_pipeline::set_buffer_size_limit(boost::optional < guint > const &p_new_size)
+{
+	std::unique_lock < std::mutex > lock(m_loop_mutex);
+	if (m_current_stream)
+		m_current_stream->set_buffer_size_limit(p_new_size);
+}
+
+
+void main_pipeline::set_buffer_duration_limit(boost::optional < guint64 > const &p_new_duration)
+{
+	std::unique_lock < std::mutex > lock(m_loop_mutex);
+	if (m_current_stream)
+		m_current_stream->set_buffer_duration_limit(p_new_duration);
 }
 
 

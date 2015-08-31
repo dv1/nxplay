@@ -288,6 +288,39 @@ public:
 	explicit main_pipeline(callbacks const &p_callbacks, GstClockTime const p_needs_next_media_time = GST_SECOND * 5, guint const p_update_interval = 500, bool const p_postpone_all_tags = false, processing_objects const &p_processing_objects = processing_objects());
 	~main_pipeline();
 
+	/// Sets the size limit of the current stream's buffer, in bytes.
+	/**
+	 * See the documentation for playback_properties's m_buffer_size value for details.
+	 * If no current stream exists, this function does nothing.
+	 *
+	 * Note that an increase in the limits causes the relative buffer fill level to drop.
+	 * If for example the limits result in a current fill level of 1 MB, and after setting
+	 * them, there is suddenly room for 2 MB, the fill level will instantly drop to 50%
+	 * internally. If it drops below 10%, the pipeline will switch to the buffering state.
+	 * If however the limits are reduced, then the internal buffer level will effectively
+	 * be above 100% for a while until all of the excess bytes are consumed.
+	 *
+	 * @param p_new_size New size limit in bytes, or boost::none if the default size (2 MB)
+	 *        shall be used
+	 */
+	virtual void set_buffer_size_limit(boost::optional < guint > const &p_new_size);
+	/// Sets the duration limit of the current stream's buffer, in nanoseconds.
+	/**
+	 * See the documentation for playback_properties's m_buffer_duration value for details.
+	 * If no current stream exists, this function does nothing.
+	 *
+	 * Note that an increase in the limits causes the relative buffer fill level to drop.
+	 * If for example the limits result in a current fill level of 1 MB, and after setting
+	 * them, there is suddenly room for 2 MB, the fill level will instantly drop to 50%
+	 * internally. If it drops below 10%, the pipeline will switch to the buffering state.
+	 * If however the limits are reduced, then the internal buffer level will effectively
+	 * be above 100% for a while until all of the excess bytes are consumed.
+	 *
+	 * @param p_new_duration New duration limit in bytes, or boost::none if the default
+	 *        duration (2 seconds) shall be used
+	 */
+	virtual void set_buffer_duration_limit(boost::optional < guint64 > const &p_new_duration);
+
 	virtual guint64 get_new_token() override;
 	virtual void stop() override;
 
@@ -370,6 +403,9 @@ private:
 		playback_properties const & get_playback_properties() const;
 
 		bool contains_object(GstObject *p_object);
+
+		void set_buffer_size_limit(boost::optional < guint > const &p_new_size);
+		void set_buffer_duration_limit(boost::optional < guint64 > const &p_new_duration);
 
 		boost::optional < guint > get_current_buffer_level() const;
 		boost::optional < guint > get_buffer_size() const;
