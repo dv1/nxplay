@@ -2091,8 +2091,6 @@ gboolean main_pipeline::static_bus_watch(GstBus *, GstMessage *p_msg, gpointer p
 			gst_message_parse_buffering(p_msg, &percent);
 			source = GST_MESSAGE_SRC(p_msg);
 
-			// TODO: add buffering stats to callback
-
 			NXPLAY_LOG_MSG(debug, "buffering reported by " << GST_MESSAGE_SRC_NAME(p_msg) << " at " << percent << "%");
 
 			stream *stream_ = nullptr;
@@ -2117,24 +2115,34 @@ gboolean main_pipeline::static_bus_watch(GstBus *, GstMessage *p_msg, gpointer p
 				bool changed = false;
 
 				// Use a low/high watermark approach. If the stream isn't buffering,
-				// and the buffer fill level falls below 20%, enable buffering.
+				// and the buffer fill level falls below 100%, enable buffering.
 				// If the stream is buffering, and the fill level reaches 100%
 				// (= stream is fully filled), disable buffering.
 
-				// TODO: make the low watermark a constructor parameter
-				// (100% as high watermark is always required, otherwise GStreamer
-				// queues may behave funny)
-				if ((percent < 100) && !(stream_->is_buffering()))
+				if (percent < 100)
 				{
-					NXPLAY_LOG_MSG(debug, label << " stream's buffering state too low; enabling buffering flag");
-					stream_->set_buffering(true);
-					changed = true;
+					if (!(stream_->is_buffering()))
+					{
+						NXPLAY_LOG_MSG(debug, label << " stream's buffer fill level is too low; enabling buffering flag");
+						stream_->set_buffering(true);
+						changed = true;
+					}
+					else if ((self->m_state != state_buffering) && (self->m_state != state_starting))
+					{
+						// This can be reached when seeking in HTTP streams for example
+
+						NXPLAY_LOG_MSG(debug, label << " stream's buffering flag enabled, but not in buffering state (instead, state is " << get_state_name(self->m_state) << "); checking");
+						changed = true;
+					}
 				}
-				else if ((percent >= 100) && stream_->is_buffering())
+				else
 				{
-					NXPLAY_LOG_MSG(debug, label << " stream's buffering state high enough; disabling buffering flag");
-					stream_->set_buffering(false);
-					changed = true;
+					if (stream_->is_buffering())
+					{
+						NXPLAY_LOG_MSG(debug, label << " stream's buffer fill level is enough; disabling buffering flag");
+						stream_->set_buffering(false);
+						changed = true;
+					}
 				}
 
 				// If the current stream is the one that posted the message,
