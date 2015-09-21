@@ -91,7 +91,7 @@ def build(bld):
 	bld(
 		features = ['cxx', 'cxxshlib'],
 		includes = ['.', 'nxplay'],
-		uselib = ['GSTREAMER', 'GSTREAMER_BASE', 'GSTREAMER_AUDIO'],
+		uselib = ['GSTREAMER', 'GSTREAMER_BASE', 'GSTREAMER_AUDIO', 'BOOST'],
 		target = 'nxplay',
 		name = 'nxplay',
 		vnum = nxplay_version,

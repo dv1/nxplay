@@ -16,7 +16,7 @@ def build(bld):
 		bld(
 			features = ['cxx', 'cxxprogram'],
 			includes = ['.', '..'],
-			uselib = ['GSTREAMER', 'LIBEDIT'],
+			uselib = ['GSTREAMER', 'LIBEDIT', 'BOOST'],
 			use = 'nxplay',
 			target = 'cmdline-player',
 			source = ['cmdline-player.cpp', 'tokenizer.cpp'],
