@@ -17,6 +17,7 @@
 #include <set>
 #include <mutex>
 #include <thread>
+#include <vector>
 #include <condition_variable>
 #include <boost/optional.hpp>
 #include "pipeline.hpp"
@@ -343,7 +344,7 @@ public:
 
 	virtual gint64 get_duration(position_units const p_unit) const override;
 
-	virtual void force_postpone_tag(std::string const &p_tag, bool const p_postpone);
+	virtual void force_postpone_tag(std::string const &p_tag, bool const p_postpone) override;
 
 
 protected:
