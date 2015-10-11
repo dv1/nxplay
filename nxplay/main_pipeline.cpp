@@ -2127,9 +2127,16 @@ gboolean main_pipeline::static_bus_watch(GstBus *, GstMessage *p_msg, gpointer p
 						stream_->set_buffering(true);
 						changed = true;
 					}
-					else if ((self->m_state != state_buffering) && (self->m_state != state_starting))
+					else if (is_current && (self->m_state != state_buffering) && (self->m_state != state_starting))
 					{
-						// This can be reached when seeking in HTTP streams for example
+						// This can be reached when seeking in HTTP streams for example.
+						//
+						// It only makes sense to do anything here if stream_ is the current stream. If the
+						// current stream caused the buffering, force a buffer state recheck, because it
+						// *should* be in buffering or starting state during buffering, but it's not.
+						//
+						// (If the next stream caused the buffering message, it won't affect the current
+						// state anyway, so it is perfectly OK if the state is not "buffering" or "starting".)
 
 						NXPLAY_LOG_MSG(debug, label << " stream's buffering flag enabled, but not in buffering state (instead, state is " << get_state_name(self->m_state) << "); checking");
 						changed = true;
