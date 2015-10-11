@@ -24,8 +24,11 @@ namespace
 
 char const *stream_eos_msg_name = "nxplay-stream-eos";
 char const *element_shutdown_marker = "nxplay-element-shutdown";
+guint64 const buffer_estimation_duration_default = GST_SECOND * 200;
+guint64 const buffer_timeout_default = GST_SECOND * 200;
 guint const buffer_size_limit_default = 1024 * 1024 * 2;
-guint64 const buffer_duration_limit_default = GST_SECOND * 2;
+guint const buffer_low_threshold_default = 10;
+guint const buffer_high_threshold_default = 99;
 
 
 GstFormat pos_unit_to_format(position_units const p_unit)
@@ -146,10 +149,13 @@ main_pipeline::stream::stream(main_pipeline &p_pipeline, guint64 const p_token, 
 	, m_is_live(false)
 	, m_is_live_status_known(false)
 	, m_is_seekable(false)
+	, m_buffering_is_blocked(false)
 	, m_bitrate(0)
-	, m_buffer_duration_limit(buffer_duration_limit_default)
+	, m_buffer_estimation_duration(buffer_estimation_duration_default)
+	, m_buffer_timeout(buffer_timeout_default)
 	, m_buffer_size_limit(buffer_size_limit_default)
 	, m_effective_buffer_size_limit(0)
+	, m_buffering_timeout_enabled(true)
 {
 	assert(m_container_bin != nullptr);
 
@@ -205,17 +211,13 @@ main_pipeline::stream::stream(main_pipeline &p_pipeline, guint64 const p_token, 
 	g_signal_connect(G_OBJECT(m_uridecodebin_elem), "pad-added", G_CALLBACK(static_new_pad_callback), gpointer(this));
 	g_signal_connect(G_OBJECT(m_uridecodebin_elem), "element-added", G_CALLBACK(static_element_added_callback), gpointer(this));
 
-	// Configure buffer size and duration if necessary
+	// Configure buffering values
 
-	if (p_properties.m_buffer_duration)
-		set_buffer_duration_limit(*(p_properties.m_buffer_duration));
-	else
-		set_buffer_duration_limit(boost::none);
+	set_buffer_estimation_duration(p_properties.m_buffer_estimation_duration);
+	set_buffer_timeout(p_properties.m_buffer_timeout);
+	set_buffer_size_limit(p_properties.m_buffer_size);
 
-	if (p_properties.m_buffer_size)
-		set_buffer_size_limit(*(p_properties.m_buffer_size));
-	else
-		set_buffer_size_limit(boost::none);
+	set_buffer_thresholds(p_properties.m_low_buffer_threshold, p_properties.m_high_buffer_threshold);
 
 	// Do not sync states with parent here just yet, since the static_new_pad_callback
 	// does checks to see if this is the current media. Let the caller assign this new
@@ -358,6 +360,20 @@ bool main_pipeline::stream::contains_object(GstObject *p_object)
 }
 
 
+void main_pipeline::stream::set_buffer_estimation_duration(boost::optional < guint64 > const &p_new_duration)
+{
+	m_buffer_estimation_duration = p_new_duration ? *p_new_duration : buffer_estimation_duration_default;
+	update_buffer_limits();
+}
+
+
+void main_pipeline::stream::set_buffer_timeout(boost::optional < guint64 > const &p_new_timeout)
+{
+	m_buffer_timeout = p_new_timeout ? *p_new_timeout : buffer_timeout_default;
+	update_buffer_limits();
+}
+
+
 void main_pipeline::stream::set_buffer_size_limit(boost::optional < guint > const &p_new_size)
 {
 	m_buffer_size_limit = p_new_size ? *p_new_size : buffer_size_limit_default;
@@ -365,9 +381,10 @@ void main_pipeline::stream::set_buffer_size_limit(boost::optional < guint > cons
 }
 
 
-void main_pipeline::stream::set_buffer_duration_limit(boost::optional < guint64 > const &p_new_duration)
+void main_pipeline::stream::set_buffer_thresholds(boost::optional < guint > const &p_low_threshold, boost::optional < guint > const &p_high_threshold)
 {
-	m_buffer_duration_limit = p_new_duration ? *p_new_duration : buffer_duration_limit_default;
+	m_low_buffer_threshold = p_low_threshold ? *p_low_threshold : buffer_low_threshold_default;
+	m_high_buffer_threshold = p_high_threshold ? *p_high_threshold : buffer_high_threshold_default;
 	update_buffer_limits();
 }
 
@@ -445,6 +462,28 @@ bool main_pipeline::stream::is_seekable() const
 }
 
 
+void main_pipeline::stream::enable_buffering_timeout(bool const p_do_enable)
+{
+	m_buffering_timeout_enabled = p_do_enable;
+	update_buffer_limits();
+}
+
+
+void main_pipeline::stream::block_buffering(bool const p_do_block)
+{
+	{
+		std::unique_lock < std::mutex > (m_block_mutex);
+		if (m_buffering_is_blocked != p_do_block)
+		{
+			NXPLAY_LOG_MSG(debug, (p_do_block ? "blocking" : "unblocking") << " the buffering of the stream with URI " << m_media.get_uri());
+			m_buffering_is_blocked = p_do_block;
+		}
+	}
+
+	m_block_condition.notify_all();
+}
+
+
 void main_pipeline::stream::static_new_pad_callback(GstElement *, GstPad *p_pad, gpointer p_data)
 {
 	stream *self = static_cast < stream* > (p_data);
@@ -488,6 +527,22 @@ void main_pipeline::stream::static_new_pad_callback(GstElement *, GstPad *p_pad,
 
 	if (self->m_pipeline.m_callbacks.m_is_seekable_callback)
 		self->m_pipeline.m_callbacks.m_is_seekable_callback(self->m_media, self->m_token, is_current_media, self->m_is_seekable);
+
+	// Install a buffer block probe if a queue is present. The buffer block
+	// probe blocks the stream by using a condition variable (m_block_condition)
+	// and waiting for the notification from the main thread.
+	if (self->m_queue_elem != nullptr)
+	{
+		GstPad *sinkpad = gst_element_get_static_pad(self->m_queue_elem, "sink");
+		gst_pad_add_probe(
+			sinkpad,
+			GstPadProbeType(GST_PAD_PROBE_TYPE_BUFFER),
+			static_buffering_block_probe,
+			gpointer(self),
+			nullptr
+		);
+		gst_object_unref(GST_OBJECT(sinkpad));
+	}
 
 	self->recheck_live_status(is_current_media);
 }
@@ -555,35 +610,66 @@ GstPadProbeReturn main_pipeline::stream::static_tag_probe(GstPad *, GstPadProbeI
 }
 
 
+GstPadProbeReturn main_pipeline::stream::static_buffering_block_probe(GstPad *, GstPadProbeInfo *p_info, gpointer p_data)
+{
+	stream *self = static_cast < stream* > (p_data);
+
+	if (G_UNLIKELY((p_info->type & GST_PAD_PROBE_TYPE_BUFFER) == 0))
+		return GST_PAD_PROBE_OK;
+
+	// Wait until the main thread sends a notification. This effectively
+	// blocks the streaming thread, because pad probes are ran in this
+	// same streaming thread.
+	{
+		std::unique_lock < std::mutex > lock(self->m_block_mutex);
+		while (self->m_buffering_is_blocked)
+		{
+			NXPLAY_LOG_MSG(trace, "waiting for stream with URI " << self->m_media.get_uri() << " to be unblocked");
+			self->m_block_condition.wait(lock);
+		}
+	}
+
+	return GST_PAD_PROBE_OK;
+}
+
+
 void main_pipeline::stream::update_buffer_limits()
 {
 	guint64 calc_size_limit = 0;
 
-	if ((m_bitrate != 0) && (m_buffer_duration_limit > 0))
+	if ((m_bitrate != 0) && (m_buffer_estimation_duration > 0))
 	{
-		calc_size_limit = gst_util_uint64_scale_int(m_buffer_duration_limit, m_bitrate / 8, GST_SECOND);
-		NXPLAY_LOG_MSG(debug, "estimated a size limit of " << calc_size_limit << " bytes out of a bitrate of " << m_bitrate << " bps");
+		calc_size_limit = gst_util_uint64_scale_int(m_buffer_estimation_duration, m_bitrate / 8, GST_SECOND);
+		NXPLAY_LOG_MSG(debug, "estimated a size limit of " << calc_size_limit << " bytes out of a bitrate of " << m_bitrate << " bps and an estimation duration of " << m_buffer_estimation_duration << " nanoseconds");
 		if (calc_size_limit > G_MAXUINT)
 			calc_size_limit = G_MAXUINT;
 	}
 
 	m_effective_buffer_size_limit = (calc_size_limit == 0) ? m_buffer_size_limit : std::min(m_buffer_size_limit, guint(calc_size_limit));
 
-	NXPLAY_LOG_MSG(debug, "setting stream buffer limits:  size: " << m_effective_buffer_size_limit << " bytes  duration: " << m_buffer_duration_limit << " nanoseconds");
+	NXPLAY_LOG_MSG(debug, "setting stream buffer size limit to " << m_effective_buffer_size_limit << " bytes");
 
 	g_object_set(
 		G_OBJECT(m_uridecodebin_elem),
-		"buffer-duration", m_buffer_duration_limit,
 		"buffer-size", m_effective_buffer_size_limit,
 		nullptr
 	);
 
 	if (m_queue_elem != nullptr)
 	{
+		// Set the max-size-time. If no buffer timeout is set, the
+		// max-size-time is set to 0.
+		// Since this queue gets BYTES segments as incoming data, a nonzero value
+		// causes the queue to spawn a timer. If this timer runs out before the
+		// queue is full (= reaches the max-size-bytes limit), it will signal
+		// buffering completion. This is useful to make sure a queue does not
+		// buffer for long periods of time.
 		g_object_set(
 			G_OBJECT(m_queue_elem),
-			"max-size-time", m_buffer_duration_limit,
+			"max-size-time", guint64(m_buffering_timeout_enabled ? m_buffer_timeout : 0),
 			"max-size-bytes", m_effective_buffer_size_limit,
+			"low-percent", gint(m_low_buffer_threshold),
+			"high-percent", gint(m_high_buffer_threshold),
 			nullptr
 		);
 	}
@@ -652,11 +738,27 @@ void main_pipeline::set_buffer_size_limit(boost::optional < guint > const &p_new
 }
 
 
-void main_pipeline::set_buffer_duration_limit(boost::optional < guint64 > const &p_new_duration)
+void main_pipeline::set_buffer_estimation_duration(boost::optional < guint64 > const &p_new_duration)
 {
 	std::unique_lock < std::mutex > lock(m_loop_mutex);
 	if (m_current_stream)
-		m_current_stream->set_buffer_duration_limit(p_new_duration);
+		m_current_stream->set_buffer_estimation_duration(p_new_duration);
+}
+
+
+void main_pipeline::set_buffer_timeout(boost::optional < guint64 > const &p_new_timeout)
+{
+	std::unique_lock < std::mutex > lock(m_loop_mutex);
+	if (m_current_stream)
+		m_current_stream->set_buffer_timeout(p_new_timeout);
+}
+
+
+void main_pipeline::set_buffer_thresholds(boost::optional < guint > const &p_new_low_threshold, boost::optional < guint > const &p_new_high_threshold)
+{
+	std::unique_lock < std::mutex > lock(m_loop_mutex);
+	if (m_current_stream)
+		m_current_stream->set_buffer_thresholds(p_new_low_threshold, p_new_high_threshold);
 }
 
 
@@ -1067,6 +1169,13 @@ void main_pipeline::set_pipeline_to_idle_nolock(bool const p_set_state)
 {
 	NXPLAY_LOG_MSG(trace, "setting pipeline to idle");
 
+	// Unblock buffering in the streams. This must happen before the pipeline is set to NULL,
+	// otherwise a deadlock occurs.
+	if (m_current_stream)
+		m_current_stream->block_buffering(false);	
+	if (m_next_stream)
+		m_next_stream->block_buffering(false);	
+
 	// Set the pipeline to NULL. This is always a synchronous state change.
 	GstStateChangeReturn ret = gst_element_set_state(GST_ELEMENT(m_pipeline_elem), GST_STATE_NULL);
 	g_assert(ret != GST_STATE_CHANGE_ASYNC); // If this is ASYNC, something in GStreamer went seriously wrong
@@ -1182,6 +1291,12 @@ bool main_pipeline::play_media_nolock(guint64 const p_token, media &&p_media, bo
 			// And sync states with parent, since the new stream
 			// is now assigned to m_current_stream
 			m_next_stream->sync_states();
+			// Don't set a buffering timeout for the next stream. Let it instead
+			// buffer until its maximum number of bytes are reached. Since the
+			// next stream won't be playing until the current one is done, it is
+			// OK to let it buffer even if does so for a long time. If this next
+			// stream becomes the current one, a buffering timeout *will* be set.
+			m_next_stream->enable_buffering_timeout(false);
 		}
 		else
 		{
@@ -1692,6 +1807,14 @@ gboolean main_pipeline::static_bus_watch(GstBus *, GstMessage *p_msg, gpointer p
 				if (!(self->m_current_stream->is_live_status_known()))
 					self->m_current_stream->recheck_live_status(true);
 
+				// Enable buffering timeouts and disable buffer blocking, to make
+				// sure this new current stream plays properly, and the user does
+				// not have to wait too long for playback to start.
+				// If a bitrate was estimated earlier, it will take effect now,
+				// and adjust the buffering size accordingly.
+				self->m_current_stream->enable_buffering_timeout(true);
+				self->m_current_stream->block_buffering(false);
+
 				// The new current media might have been buffering back when
 				// it was the next media. If so, it may still need to finish
 				// buffering. Check for that.
@@ -2155,7 +2278,25 @@ gboolean main_pipeline::static_bus_watch(GstBus *, GstMessage *p_msg, gpointer p
 				// If the current stream is the one that posted the message,
 				// and if the buffering flag actually changed, recheck the buffering situation
 				if (is_current && changed)
+				{
+					if (self->m_next_stream)
+					{
+						// In here, stream_ is the current stream, and a next stream exists.
+						// If the current stream is buffering, then block the next stream's buffering.
+						// This gives priority to the current stream's buffering, which needs to finish
+						// as soon as possible, because it interrupts the audible playback. Blocking
+						// the next stream's buffering, however, does not interrupt anything audible.
+
+						if (stream_->is_buffering())
+							NXPLAY_LOG_MSG(debug, "current stream needs to buffer; block buffering in the next stream");
+						else
+							NXPLAY_LOG_MSG(debug, "current stream no longer needs to buffer; unblock buffering in the next stream");
+
+						self->m_next_stream->block_buffering(stream_->is_buffering());
+					}
+
 					self->recheck_buffering_state_nolock();
+				}
 
 				// Notify about buffering
 				if (self->m_callbacks.m_buffering_updated_callback)

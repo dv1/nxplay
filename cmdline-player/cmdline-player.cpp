@@ -253,16 +253,39 @@ int main(int argc, char *argv[])
 			1, "<buffer size>",
 			"sets the size limit of the current stream's buffer, in bytes"
 		};
-		commands["setbufdurlimit"] =
+		commands["setbufestdur"] =
 		{
 			[&](cmdline_player::tokens const &p_tokens)
 			{
 				guint64 duration = std::stoll(p_tokens[1]) * GST_MSECOND;
-				pipeline.set_buffer_duration_limit(duration);
+				pipeline.set_buffer_estimation_duration(duration);
 				return true;
 			},
 			1, "<buffer size>",
-			"sets the duration limit of the current stream's buffer, in milliseconds"
+			"sets the duration for current stream's bitrate-based buffer size estimations, in milliseconds"
+		};
+		commands["setbuftimeout"] =
+		{
+			[&](cmdline_player::tokens const &p_tokens)
+			{
+				guint64 timeout = std::stoll(p_tokens[1]) * GST_MSECOND;
+				pipeline.set_buffer_timeout(timeout);
+				return true;
+			},
+			1, "<buffer size>",
+			"sets the current stream's buffer timeout, in milliseconds"
+		};
+		commands["setbufthresholds"] =
+		{
+			[&](cmdline_player::tokens const &p_tokens)
+			{
+				guint low = std::stoi(p_tokens[1]);
+				guint high = std::stoi(p_tokens[2]);
+				pipeline.set_buffer_thresholds(low, high);
+				return true;
+			},
+			2, "<low threshold> <high threshold>",
+			"sets the current stream's buffer timeout, in milliseconds"
 		};
 		commands["setvolume"] =
 		{

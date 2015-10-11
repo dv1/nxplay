@@ -152,6 +152,9 @@ public:
 	 * unavailable, as the bitrate isn't known until after a certain amount of data has been
 	 * read. In real-world scenarios, this means that p_limit can change once buffering has
 	 * reached 100% for the first time since the current media has started playback.
+	 * NOTE: The buffering callback of a pipeline will still receive values between 0 and 100%,
+	 * even if the low and high thresholds are different. These 0-100% refer to the interval
+	 * defined by the buffering properties here.
 	 *
 	 * @param p_media Media that is buffering
 	 * @param p_token Associated playback token (see pipeline::play_media() )
@@ -302,33 +305,40 @@ public:
 	 * See the documentation for playback_properties's m_buffer_size value for details.
 	 * If no current stream exists, this function does nothing.
 	 *
-	 * Note that an increase in the limits causes the relative buffer fill level to drop.
-	 * If for example the limits result in a current fill level of 1 MB, and after setting
-	 * them, there is suddenly room for 2 MB, the fill level will instantly drop to 50%
-	 * internally. If it drops below 10%, the pipeline will switch to the buffering state.
-	 * If however the limits are reduced, then the internal buffer level will effectively
-	 * be above 100% for a while until all of the excess bytes are consumed.
-	 *
 	 * @param p_new_size New size limit in bytes, or boost::none if the default size (2 MB)
 	 *        shall be used
 	 */
 	virtual void set_buffer_size_limit(boost::optional < guint > const &p_new_size);
-	/// Sets the duration limit of the current stream's buffer, in nanoseconds.
+	/// Sets the estimation duration of the current stream's buffer, in nanoseconds.
 	/**
-	 * See the documentation for playback_properties's m_buffer_duration value for details.
+	 * See the documentation for playback_properties's m_buffer_estimation_duration value for details.
 	 * If no current stream exists, this function does nothing.
 	 *
-	 * Note that an increase in the limits causes the relative buffer fill level to drop.
-	 * If for example the limits result in a current fill level of 1 MB, and after setting
-	 * them, there is suddenly room for 2 MB, the fill level will instantly drop to 50%
-	 * internally. If it drops below 10%, the pipeline will switch to the buffering state.
-	 * If however the limits are reduced, then the internal buffer level will effectively
-	 * be above 100% for a while until all of the excess bytes are consumed.
-	 *
-	 * @param p_new_duration New duration limit in bytes, or boost::none if the default
+	 * @param p_new_duration New estimation duration in nanoseconds, or boost::none if the default
 	 *        duration (2 seconds) shall be used
 	 */
-	virtual void set_buffer_duration_limit(boost::optional < guint64 > const &p_new_duration);
+	virtual void set_buffer_estimation_duration(boost::optional < guint64 > const &p_new_duration);
+	/// Sets the timeout of the current stream's buffer, in nanoseconds.
+	/**
+	 * See the documentation for playback_properties's m_buffer_timeout value for details.
+	 * If no current stream exists, this function does nothing.
+	 *
+	 * @param p_new_timeout New timeout in nanoseconds, or boost::none if the default
+	 *        duration (2 seconds) shall be used
+	 */
+	virtual void set_buffer_timeout(boost::optional < guint64 > const &p_new_timeout);
+
+	/// Sets the low and high buffering thresholds of the current stream's buffer, in percent.
+	/**
+	 * See the buffering documentation in the playback_properties' description for details.
+	 * If no current stream exists, this function does nothing.
+	 *
+	 * @param p_new_low_threshold New low threshold, in percent, or boost::none if the default
+	 *        duration (10 %) shall be used
+	 * @param p_new_high_threshold New low threshold, in percent, or boost::none if the default
+	 *        duration (99 %) shall be used
+	 */
+	virtual void set_buffer_thresholds(boost::optional < guint > const &p_new_low_threshold, boost::optional < guint > const &p_new_high_threshold);
 
 	virtual guint64 get_new_token() override;
 	virtual void stop() override;
@@ -413,8 +423,11 @@ private:
 
 		bool contains_object(GstObject *p_object);
 
+		void set_buffer_estimation_duration(boost::optional < guint64 > const &p_new_duration);
+		void set_buffer_timeout(boost::optional < guint64 > const &p_new_timeout);
 		void set_buffer_size_limit(boost::optional < guint > const &p_new_size);
-		void set_buffer_duration_limit(boost::optional < guint64 > const &p_new_duration);
+
+		void set_buffer_thresholds(boost::optional < guint > const &p_low_threshold, boost::optional < guint > const &p_high_threshold);
 
 		boost::optional < guint > get_current_buffer_level() const;
 
@@ -429,10 +442,14 @@ private:
 
 		bool is_seekable() const;
 
+		void enable_buffering_timeout(bool const p_do_enable);
+		void block_buffering(bool const p_do_block);
+
 	private:
 		static void static_new_pad_callback(GstElement *p_uridecodebin, GstPad *p_pad, gpointer p_data);
 		static void static_element_added_callback(GstElement *p_uridecodebin, GstElement *p_element, gpointer p_data);
 		static GstPadProbeReturn static_tag_probe(GstPad *p_pad, GstPadProbeInfo *p_info, gpointer p_data);
+		static GstPadProbeReturn static_buffering_block_probe(GstPad *p_pad, GstPadProbeInfo *p_info, gpointer p_data);
 
 		void update_buffer_limits();
 
@@ -448,10 +465,18 @@ private:
 		bool m_is_live_status_known;
 		bool m_is_seekable;
 
+		std::condition_variable m_block_condition;
+		std::mutex m_block_mutex;
+		bool m_buffering_is_blocked;
+
 		guint m_bitrate;
-		guint64 m_buffer_duration_limit;
+		guint64 m_buffer_estimation_duration;
+		guint64 m_buffer_timeout;
 		guint m_buffer_size_limit;
 		guint m_effective_buffer_size_limit;
+		bool m_buffering_timeout_enabled;
+
+		guint m_low_buffer_threshold, m_high_buffer_threshold;
 
 		// Used in the static_new_pad_callback and in the destructor,
 		// to prevent both from running at the same time (this is a corner

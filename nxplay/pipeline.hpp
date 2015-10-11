@@ -78,6 +78,43 @@ std::string get_state_name(states const p_state);
  * These are optional properties which affect the behavior of play_media().
  * They make it possible to start playback in paused state, to seek right
  * when starting playback, and to adjust the streaming buffer size/duration.
+ *
+ * The buffering is controlled by three properties: estimation duration,
+ * timeout, and size.
+ *
+ * Size is an explicit maximum size for the buffering, in bytes. This value
+ * must be nonzero.
+ *
+ * Timeout specifies a timeout value for an internal timer which a stream
+ * uses. If this timer runs out, and the stream is still buffering, then the
+ * buffering finishes (= is set as having reached 100%). This is a mechanism
+ * to prevent overly long buffering. For example, if the maximum size is set
+ * to 2 MB, and the input is a 64 kbps MP3 stream, it would take a long time
+ * to fill these 2 MB. Note that a next stream will never use this timeout;
+ * only if it becomes the current stream while it is buffering will it enable
+ * this timer.
+ * If m_buffer_timeout is set to zero, no timeout is used.
+ *
+ * Estimation duration is a duration value which is used when a bitrate is
+ * determined. Using this bitrate, a buffer size in bytes is estimated. The
+ * buffering will then use either this calculated size, or the m_buffer_size
+ * value, whichever is smaller. This is useful to configure a stream's buffer
+ * to cover a certain duration, which is better for cases where the source
+ * delivers data rather slowly (internet radios with poor connectivity, for
+ * example).
+ * If m_buffer_estimation_duration is set to zero, this estimation is not done.
+ *
+ * If the fill level percentage of the buffer goes below m_low_buffer_threshold,
+ * the pipeline is set to a buffering state. If the pipeline is buffering, and
+ * the fill level exceeds m_high_buffer_threshold, the buffering state is reset.
+ * A m_high_buffer_threshold value lower than 100% means that the pipeline will
+ * exit the buffering state, but will still fill up the buffer until its maximum
+ * size is reached. For example, m_high_buffer_threshold set to 20, and
+ * m_buffer_size set to 10 MB, will cause the pipeline to exit the state once
+ * the buffer contains 2 MB (= 20% of 10 MB), but the buffer will still get
+ * filled until it contains 10 MB (or until the end-of-stream is reached).
+ * m_low_buffer_threshold must always be smaller than m_high_buffer_threshold.
+ * The default values are 10 for m_low_buffer_threshold and 99 for m_high_buffer_threshold.
  */
 struct playback_properties
 {
@@ -89,33 +126,33 @@ struct playback_properties
 	/// Unit to use for m_start_at_position. Default value is position_unit_nanoseconds.
 	position_units m_start_at_position_unit;
 
-	/// Values other than boost::none specify the duration capacity of the streaming buffer, in nanoseconds.
+	/// Values other than boost::none specify the duration to be used for bitrate-based estimations, in milliseconds.
 	/**
-	 * If this is not set to boost::none, and if the amount of buffered data reaches this
-	 * duration, then buffering will stop (= reach 100%). If this is boost::none, the default
-	 * capacity value of two seconds will be used.
-	 *
-	 * @note If both m_buffer_size and m_buffer_duration are set to a non-boost::none value,
-	 * then buffering will stop once either of their capacities are reached. If for example
-	 * m_buffer_duration is set to 10 seconds, and m_buffer_size is set to 48 kB, and the stream
-	 * is a 192 kbps MP3 stream, then buffering will reach 100% after 2 seconds already, because
-	 * the m_buffer_size capacity is reached before m_buffer_duration (and 48 kB equals 2 seconds
-	 * of playback at 192 kbps).
-	 *
-	 * Default value is boost::none.
+	 * See the buffering description in the playback_properties documentation for details.
 	 */
-	boost::optional < guint64 > m_buffer_duration;
-	/// Values other than boost::none specify the size capacity of the streaming buffer, in bytes.
+	boost::optional < guint64 > m_buffer_estimation_duration;
+
+	/// Values other than boost::none specify the buffering timeout, in nanoseconds.
 	/**
-	 * If this is not set to boost::none, and if the amount of buffered data reaches this
-	 * size, then buffering will stop (= reach 100%). If this is boost::none, the default
-	 * capacity value of 2 MB will be used.
-	 *
-	 * See the m_buffer_duration documentation for additional notes.
-	 *
-	 * Default value is boost::none.
+	 * See the buffering description in the playback_properties documentation for details.
+	 */
+	boost::optional < guint64 > m_buffer_timeout;
+	/// Values other than boost::none specify the maximum size of the streaming buffer, in bytes.
+	/**
+	 * See the buffering description in the playback_properties documentation for details.
 	 */
 	boost::optional < guint > m_buffer_size;
+
+	/// Values other than boost::none specify the low buffering threshold, in percent.
+	/**
+	 * See the threshold percentage in the playback_properties documentation for details.
+	 */
+	boost::optional < guint > m_low_buffer_threshold;
+	/// Values other than boost::none specify the high buffering threshold, in percent.
+	/**
+	 * See the threshold percentage in the playback_properties documentation for details.
+	 */
+	boost::optional < guint > m_high_buffer_threshold;
 
 	/// Default constructor. Sets the values above to their defaults.
 	playback_properties();
@@ -125,8 +162,11 @@ struct playback_properties
 		bool const p_start_paused,
 		gint64 const p_start_at_position,
 		position_units const p_start_at_position_unit,
-		boost::optional < guint64 > const &p_buffer_duration,
-		boost::optional < guint > const &p_buffer_size
+		boost::optional < guint64 > const &p_buffer_estimation_duration,
+		boost::optional < guint64 > const &p_buffer_duration_timeout,
+		boost::optional < guint > const &p_buffer_size,
+		boost::optional < guint > const &p_low_buffer_threshold,
+		boost::optional < guint > const &p_high_buffer_threshold
 	);
 };
 

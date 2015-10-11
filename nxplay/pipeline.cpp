@@ -34,8 +34,11 @@ playback_properties::playback_properties()
 	: m_start_paused(false)
 	, m_start_at_position(0)
 	, m_start_at_position_unit(position_unit_nanoseconds)
-	, m_buffer_duration(boost::none)
+	, m_buffer_estimation_duration(boost::none)
+	, m_buffer_timeout(boost::none)
 	, m_buffer_size(boost::none)
+	, m_low_buffer_threshold(boost::none)
+	, m_high_buffer_threshold(boost::none)
 {
 }
 
@@ -44,14 +47,20 @@ playback_properties::playback_properties(
 	bool const p_start_paused,
 	gint64 const p_start_at_position,
 	position_units const p_start_at_position_unit,
-	boost::optional < guint64 > const &p_buffer_duration,
-	boost::optional < guint > const &p_buffer_size
+	boost::optional < guint64 > const &p_buffer_estimation_duration,
+	boost::optional < guint64 > const &p_buffer_timeout,
+	boost::optional < guint > const &p_buffer_size,
+	boost::optional < guint > const &p_low_buffer_threshold,
+	boost::optional < guint > const &p_high_buffer_threshold
 )
 	: m_start_paused(p_start_paused)
 	, m_start_at_position(p_start_at_position)
 	, m_start_at_position_unit(p_start_at_position_unit)
-	, m_buffer_duration(p_buffer_duration)
+	, m_buffer_estimation_duration(p_buffer_estimation_duration)
+	, m_buffer_timeout(p_buffer_timeout)
 	, m_buffer_size(p_buffer_size)
+	, m_low_buffer_threshold(p_low_buffer_threshold)
+	, m_high_buffer_threshold(p_high_buffer_threshold)
 {
 }
 
