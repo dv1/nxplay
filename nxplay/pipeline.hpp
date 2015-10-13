@@ -126,7 +126,7 @@ struct playback_properties
 	/// Unit to use for m_start_at_position. Default value is position_unit_nanoseconds.
 	position_units m_start_at_position_unit;
 
-	/// Values other than boost::none specify the duration to be used for bitrate-based estimations, in milliseconds.
+	/// Values other than boost::none specify the duration to be used for bitrate-based estimations, in nanoseconds.
 	/**
 	 * See the buffering description in the playback_properties documentation for details.
 	 */
