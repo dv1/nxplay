@@ -24,8 +24,8 @@ namespace
 
 char const *stream_eos_msg_name = "nxplay-stream-eos";
 char const *element_shutdown_marker = "nxplay-element-shutdown";
-guint64 const buffer_estimation_duration_default = GST_SECOND * 200;
-guint64 const buffer_timeout_default = GST_SECOND * 200;
+guint64 const buffer_estimation_duration_default = GST_SECOND * 2;
+guint64 const buffer_timeout_default = GST_SECOND * 2;
 guint const buffer_size_limit_default = 1024 * 1024 * 2;
 guint const buffer_low_threshold_default = 10;
 guint const buffer_high_threshold_default = 99;
