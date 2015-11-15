@@ -1014,6 +1014,7 @@ bool main_pipeline::initialize_pipeline_nolock()
 {
 	// Construct the pipeline
 
+	GstElement *audioqueue_elem = nullptr;
 	GstElement *audioconvert_elem = nullptr;
 	GstElement *audioresample_elem = nullptr;
 
@@ -1042,6 +1043,13 @@ bool main_pipeline::initialize_pipeline_nolock()
 	if (m_concat_elem == nullptr)
 	{
 		NXPLAY_LOG_MSG(error, "could not create concat element");
+		return false;
+	}
+
+	audioqueue_elem = gst_element_factory_make("queue", "audioqueue");
+	if (audioqueue_elem == nullptr)
+	{
+		NXPLAY_LOG_MSG(error, "could not create audio queue element");
 		return false;
 	}
 
@@ -1081,15 +1089,17 @@ bool main_pipeline::initialize_pipeline_nolock()
 		gst_bin_add(GST_BIN(m_pipeline_elem), obj->get_gst_element());
 	}
 
-	gst_bin_add_many(GST_BIN(m_pipeline_elem), m_concat_elem, audioconvert_elem, audioresample_elem, m_audiosink_elem, nullptr);
+	gst_bin_add_many(GST_BIN(m_pipeline_elem), m_concat_elem, audioqueue_elem, audioconvert_elem, audioresample_elem, m_audiosink_elem, nullptr);
 	// no need to guard the elements anymore, since the pipeline
 	// now manages their lifetime
 	elems_guard.unguard();
 
 	// Link all of the elements together
+	// A queue is placed right before audioconvert, to alleviate corner cases
+	// which can cause audible glitches when resuming paused playback
 	if (m_processing_objects.empty())
 	{
-		gst_element_link_many(m_concat_elem, audioconvert_elem, audioresample_elem, m_audiosink_elem, nullptr);
+		gst_element_link_many(m_concat_elem, audioqueue_elem, audioconvert_elem, audioresample_elem, m_audiosink_elem, nullptr);
 	}
 	else
 	{
@@ -1098,7 +1108,7 @@ bool main_pipeline::initialize_pipeline_nolock()
 		for (auto iter = m_processing_objects.begin() + 1; iter != m_processing_objects.end(); ++iter)
 			gst_element_link((*(iter - 1))->get_gst_element(), (*iter)->get_gst_element());
 
-		gst_element_link_many(m_processing_objects.back()->get_gst_element(), audioconvert_elem, audioresample_elem, m_audiosink_elem, nullptr);
+		gst_element_link_many(m_processing_objects.back()->get_gst_element(), audioqueue_elem, audioconvert_elem, audioresample_elem, m_audiosink_elem, nullptr);
 	}
 
 	// Setup the pipeline bus
