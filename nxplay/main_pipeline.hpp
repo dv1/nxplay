@@ -442,6 +442,8 @@ private:
 
 		bool is_seekable() const;
 
+		bool performs_buffering() const;
+
 		void enable_buffering_timeout(bool const p_do_enable);
 		void block_buffering(bool const p_do_block);
 

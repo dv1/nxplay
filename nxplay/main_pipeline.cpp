@@ -462,6 +462,16 @@ bool main_pipeline::stream::is_seekable() const
 }
 
 
+bool main_pipeline::stream::performs_buffering() const
+{
+	/* If the pipeline is live, and the live status is known, no buffering will be done.
+	 * If the pipeline is live, but the live status isn'T known, no buffering will be done
+	 * either, because at this point, it is assumed to be live.
+	 * If the pipeline isn't live, buffering is done only is a queue element has been found. */
+	return (m_queue_elem != nullptr) && is_live_status_known() && !is_live();
+}
+
+
 void main_pipeline::stream::enable_buffering_timeout(bool const p_do_enable)
 {
 	m_buffering_timeout_enabled = p_do_enable;
@@ -1527,9 +1537,35 @@ bool main_pipeline::finish_seeking_nolock(bool const p_set_state_after_seeking)
 		}
 		else
 		{
-			NXPLAY_LOG_MSG(debug, "seeking finished; witching to PLAYING now");
-			set_gstreamer_state_nolock(GST_STATE_PLAYING);
-			// the bus watch will handle the pipeline state_seeking -> state_playing change
+			// The pipeline wasn't in the paused state when seeking started
+
+			if (m_current_stream && m_current_stream->performs_buffering())
+			{
+				// Seek was performed on a stream that buffers. This means
+				// that the internal stream queue is empty now, and will
+				// need to be refilled. Therefore it makes little sense to
+				// switch to PLAYING just yet. This would only cause a little
+				// bit of playback, followed by silence when the BUFFERING
+				// message is received and the code detects that it should
+				// be in the buffering state. So, instead, let's just switch
+				// to the buffering state here directly, avoiding this brief
+				// bit of playback.
+
+				NXPLAY_LOG_MSG(debug, "seeking finished; switching to buffering state");
+				m_current_stream->set_buffering(true);
+				set_state_nolock(state_buffering);
+			}
+			else
+			{
+				// Seek was performed on a stream that doesn't buffer.
+				// The pipeline can be switched to the PLAYING GStreamer state now.
+				// (The bus watch will handle the pipeline state_seeking -> state_playing
+				// state change once it happens, which is cleaner than switching here
+				// directly.)
+
+				NXPLAY_LOG_MSG(debug, "seeking finished; switching to PLAYING now");
+				set_gstreamer_state_nolock(GST_STATE_PLAYING);
+			}
 		}
 	}
 
