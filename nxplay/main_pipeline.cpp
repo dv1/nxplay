@@ -661,7 +661,7 @@ void main_pipeline::stream::update_buffer_limits()
 
 	g_object_set(
 		G_OBJECT(m_uridecodebin_elem),
-		"buffer-size", m_effective_buffer_size_limit,
+		"buffer-size", gint(m_effective_buffer_size_limit),
 		nullptr
 	);
 
