@@ -3,6 +3,7 @@
 #include <stdexcept>
 #include <iostream>
 #include <iomanip>
+#include <pthread.h>
 #include <nxplay/log.hpp>
 #include <nxplay/init_gstreamer.hpp>
 #include <nxplay/main_pipeline.hpp>
@@ -68,12 +69,40 @@ void print_commands(command_map const &p_command_map)
 }
 
 
+void set_realtime_scheduling()
+{
+	int err, old_policy;
+	struct sched_param param;
+
+	err = pthread_getschedparam(pthread_self(), &old_policy, &param);
+	if (err != 0)
+	{
+		std::cerr << "Could not retrieve thread scheduling parameters: " << std::strerror(err) << "\n";
+		return;
+	}
+
+	param.sched_priority = sched_get_priority_min(SCHED_RR);
+
+	err = pthread_setschedparam(pthread_self(), SCHED_RR, &param);
+	if (err != 0)
+	{
+		std::cerr << "Could not set thread scheduling parameters: " << std::strerror(err) << "\n";
+		return;
+	}
+
+	std::cerr << "Threads now running with realtime scheduling\n";
+}
+
+
 }
 
 
 int main(int argc, char *argv[])
 {
 	int ret = 0;
+
+
+	set_realtime_scheduling();
 
 
 	// Set up nxplay log
