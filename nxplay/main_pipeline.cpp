@@ -149,6 +149,7 @@ main_pipeline::stream::stream(main_pipeline &p_pipeline, guint64 const p_token, 
 	, m_is_live(false)
 	, m_is_live_status_known(false)
 	, m_is_seekable(false)
+	, m_is_seekable_status_known(false)
 	, m_buffering_is_blocked(false)
 	, m_bitrate(0)
 	, m_buffer_estimation_duration(buffer_estimation_duration_default)
@@ -462,6 +463,35 @@ bool main_pipeline::stream::is_seekable() const
 }
 
 
+bool main_pipeline::stream::is_seekable_status_known() const
+{
+       return m_is_seekable_status_known;
+}
+
+
+void main_pipeline::stream::recheck_seekable_status(bool const p_is_current_media)
+{
+       GstQuery *query = gst_query_new_seeking(GST_FORMAT_TIME);
+       gboolean is_seekable;
+
+       if (gst_pad_query(m_identity_srcpad, query))
+       {
+               gst_query_parse_seeking(query, nullptr, &is_seekable, nullptr, nullptr);
+               m_is_seekable = is_seekable;
+               m_is_seekable_status_known = true;
+
+               if (m_pipeline.m_callbacks.m_is_seekable_callback)
+                       m_pipeline.m_callbacks.m_is_seekable_callback(m_media, m_token, p_is_current_media, m_is_seekable);
+       }
+       else
+               m_is_seekable_status_known = false;
+
+       NXPLAY_LOG_MSG(debug, "seekable status is known: " << m_is_seekable_status_known << "   is seekable: " << m_is_seekable);
+
+       gst_query_unref(query);
+}
+
+
 bool main_pipeline::stream::performs_buffering() const
 {
 	/* If the pipeline is live, and the live status is known, no buffering will be done.
@@ -520,23 +550,7 @@ void main_pipeline::stream::static_new_pad_callback(GstElement *, GstPad *p_pad,
 	gst_pad_link(p_pad, identity_sinkpad);
 	gst_object_unref(GST_OBJECT(identity_sinkpad));
 
-	// Find out some details about the media, namely
-	// whether or not it is seekable and live
-	GstQuery *query;
-	gboolean is_seekable = FALSE;
-
-	query = gst_query_new_seeking(GST_FORMAT_TIME);
-	if (gst_pad_query(p_pad, query))
-		gst_query_parse_seeking(query, nullptr, &is_seekable, nullptr, nullptr);
-	gst_query_unref(query);
-
-	self->m_is_seekable = is_seekable;
-	NXPLAY_LOG_MSG(debug, "decodebin pad linked  stream: " << guintptr(self) << "  is seekable: " << is_seekable);
-
 	bool is_current_media = (self->m_pipeline.m_current_stream.get() == self);
-
-	if (self->m_pipeline.m_callbacks.m_is_seekable_callback)
-		self->m_pipeline.m_callbacks.m_is_seekable_callback(self->m_media, self->m_token, is_current_media, self->m_is_seekable);
 
 	// Install a buffer block probe if a queue is present. The buffer block
 	// probe blocks the stream by using a condition variable (m_block_condition)
@@ -554,6 +568,7 @@ void main_pipeline::stream::static_new_pad_callback(GstElement *, GstPad *p_pad,
 		gst_object_unref(GST_OBJECT(sinkpad));
 	}
 
+	self->recheck_seekable_status(is_current_media);
 	self->recheck_live_status(is_current_media);
 }
 
@@ -1675,6 +1690,13 @@ gboolean main_pipeline::static_timeout_cb(gpointer p_data)
 	// accessing the current stream at the same time.
 	self->make_next_stream_current_nolock();
 
+	// The seekable status might not be known even after the stream started and the
+	// GStreamer state changed to PLAYING. It might only become known at some
+	// unspecified point in time. Therefore, as a last resort, continually try to
+	// recheck the status until it is known.
+	if ((self->m_current_stream != nullptr) && !(self->m_current_stream->is_seekable_status_known()))
+		self->m_current_stream->recheck_seekable_status(true);
+
 	// Pass on any postponed tags now to the m_new_tags_callback
 	// (if there are any)
 	if (self->m_callbacks.m_new_tags_callback && (self->m_current_stream != nullptr) && !(self->m_postponed_tags_list.is_empty()))
@@ -1853,6 +1875,11 @@ gboolean main_pipeline::static_bus_watch(GstBus *, GstMessage *p_msg, gpointer p
 				if (self->m_callbacks.m_media_started_callback)
 					self->m_callbacks.m_media_started_callback(self->m_current_stream->get_media(), self->m_current_stream->get_token());
 
+				// Sometimes, the seekable status is only known after the stream starts, so try to look it up here.
+				if (!(self->m_current_stream->is_seekable_status_known()))
+					self->m_current_stream->recheck_seekable_status(true);
+
+				// Sometimes, the live status is only known after the stream starts, so try to look it up here.
 				if (!(self->m_current_stream->is_live_status_known()))
 					self->m_current_stream->recheck_live_status(true);
 
@@ -2024,6 +2051,10 @@ gboolean main_pipeline::static_bus_watch(GstBus *, GstMessage *p_msg, gpointer p
 							break;
 
 						case GST_STATE_PLAYING:
+							// Sometimes, the seekable status is only known after switching to PLAYING, so try to look it up here.
+							if ((self->m_current_stream != nullptr) && !(self->m_current_stream->is_seekable_status_known()))
+								self->m_current_stream->recheck_seekable_status(true);
+
 							enable_timeouts = true;
 							self->set_state_nolock(state_playing);
 							self->handle_postponed_task_nolock();

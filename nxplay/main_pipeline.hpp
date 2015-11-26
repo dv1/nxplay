@@ -441,6 +441,8 @@ private:
 		void recheck_live_status(bool const p_is_current_media);
 
 		bool is_seekable() const;
+		bool is_seekable_status_known() const;
+		void recheck_seekable_status(bool const p_is_current_media);
 
 		bool performs_buffering() const;
 
@@ -466,6 +468,7 @@ private:
 		bool m_is_live;
 		bool m_is_live_status_known;
 		bool m_is_seekable;
+		bool m_is_seekable_status_known;
 
 		std::condition_variable m_block_condition;
 		std::mutex m_block_mutex;
