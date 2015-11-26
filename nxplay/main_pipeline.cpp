@@ -2005,7 +2005,7 @@ gboolean main_pipeline::static_bus_watch(GstBus *, GstMessage *p_msg, gpointer p
 								{
 									// Handle buffering state updates if this is a non-live source
 									// If the current stream is not buffering, we can switch to
-									// PLAYING immediately; otherwise, remain at PAUSED until
+									// PLAYING immediately; otherwise, switch to buffering state until
 									// buffering is done (handled by the GST_MESSAGE_BUFFERING
 									// code below)
 									if (!(self->m_current_stream->is_live()) && self->m_current_stream->is_buffering())
@@ -2016,7 +2016,6 @@ gboolean main_pipeline::static_bus_watch(GstBus *, GstMessage *p_msg, gpointer p
 									else
 									{
 										NXPLAY_LOG_MSG(debug, "current stream fully buffered or does not need buffering; continuing to playing state");
-										self->set_state_nolock(state_paused);
 										self->set_gstreamer_state_nolock(GST_STATE_PLAYING);
 									}
 								}
@@ -2027,6 +2026,7 @@ gboolean main_pipeline::static_bus_watch(GstBus *, GstMessage *p_msg, gpointer p
 						case GST_STATE_PLAYING:
 							enable_timeouts = true;
 							self->set_state_nolock(state_playing);
+							self->handle_postponed_task_nolock();
 							break;
 
 						default:
