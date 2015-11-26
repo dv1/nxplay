@@ -674,8 +674,11 @@ void main_pipeline::stream::update_buffer_limits()
 		// queue is full (= reaches the max-size-bytes limit), it will signal
 		// buffering completion. This is useful to make sure a queue does not
 		// buffer for long periods of time.
+		// max-size-buffers is set to 0, since we don't want a limit based on the
+		// number of queued buffers.
 		g_object_set(
 			G_OBJECT(m_queue_elem),
+			"max-size-buffers", guint(0),
 			"max-size-time", guint64(m_buffering_timeout_enabled ? m_buffer_timeout : 0),
 			"max-size-bytes", m_effective_buffer_size_limit,
 			"low-percent", gint(m_low_buffer_threshold),
