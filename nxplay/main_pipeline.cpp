@@ -129,6 +129,14 @@ bool is_object_marked_as_shutting_down(GObject *p_object)
 }
 
 
+std::string get_thread_name(pthread_t p_thread)
+{
+	char buf[100];
+	pthread_getname_np(p_thread, buf, sizeof(buf));
+	return std::string(buf);
+}
+
+
 } // unnamed namespace end
 
 
@@ -718,7 +726,7 @@ void main_pipeline::stream::update_buffer_limits()
 
 
 
-main_pipeline::main_pipeline(callbacks const &p_callbacks, GstClockTime const p_needs_next_media_time, guint const p_update_interval, bool const p_postpone_all_tags, processing_objects const &p_processing_objects)
+main_pipeline::main_pipeline(callbacks const &p_callbacks, GstClockTime const p_needs_next_media_time, guint const p_update_interval, bool const p_postpone_all_tags, processing_objects const &p_processing_objects, boost::optional < thread_sched_settings > const &p_thread_sched_settings)
 	: m_state(state_idle)
 	, m_duration_in_nanoseconds(-1)
 	, m_duration_in_bytes(-1)
@@ -733,10 +741,12 @@ main_pipeline::main_pipeline(callbacks const &p_callbacks, GstClockTime const p_
 	, m_pending_gstreamer_state(GST_STATE_VOID_PENDING)
 	, m_pipeline_elem(nullptr)
 	, m_concat_elem(nullptr)
+	, m_audioqueue_elem(nullptr)
 	, m_audiosink_elem(nullptr)
 	, m_bus(nullptr)
 	, m_watch_source(nullptr)
 	, m_next_token(0)
+	, m_thread_sched_settings(p_thread_sched_settings)
 	, m_thread_loop(nullptr)
 	, m_thread_loop_context(nullptr)
 	, m_callbacks(p_callbacks)
@@ -1045,7 +1055,6 @@ bool main_pipeline::initialize_pipeline_nolock()
 {
 	// Construct the pipeline
 
-	GstElement *audioqueue_elem = nullptr;
 	GstElement *audioconvert_elem = nullptr;
 	GstElement *audioresample_elem = nullptr;
 
@@ -1059,6 +1068,7 @@ bool main_pipeline::initialize_pipeline_nolock()
 	auto elems_guard = make_scope_guard([&]()
 	{
 		checked_unref(m_concat_elem);
+		checked_unref(m_audioqueue_elem);
 		checked_unref(audioconvert_elem);
 		checked_unref(m_audiosink_elem);
 	});
@@ -1077,8 +1087,8 @@ bool main_pipeline::initialize_pipeline_nolock()
 		return false;
 	}
 
-	audioqueue_elem = gst_element_factory_make("queue", "audioqueue");
-	if (audioqueue_elem == nullptr)
+	m_audioqueue_elem = gst_element_factory_make("queue", "audioqueue");
+	if (m_audioqueue_elem == nullptr)
 	{
 		NXPLAY_LOG_MSG(error, "could not create audio queue element");
 		return false;
@@ -1120,7 +1130,7 @@ bool main_pipeline::initialize_pipeline_nolock()
 		gst_bin_add(GST_BIN(m_pipeline_elem), obj->get_gst_element());
 	}
 
-	gst_bin_add_many(GST_BIN(m_pipeline_elem), m_concat_elem, audioqueue_elem, audioconvert_elem, audioresample_elem, m_audiosink_elem, nullptr);
+	gst_bin_add_many(GST_BIN(m_pipeline_elem), m_concat_elem, m_audioqueue_elem, audioconvert_elem, audioresample_elem, m_audiosink_elem, nullptr);
 	// no need to guard the elements anymore, since the pipeline
 	// now manages their lifetime
 	elems_guard.unguard();
@@ -1130,7 +1140,7 @@ bool main_pipeline::initialize_pipeline_nolock()
 	// which can cause audible glitches when resuming paused playback
 	if (m_processing_objects.empty())
 	{
-		gst_element_link_many(m_concat_elem, audioqueue_elem, audioconvert_elem, audioresample_elem, m_audiosink_elem, nullptr);
+		gst_element_link_many(m_concat_elem, m_audioqueue_elem, audioconvert_elem, audioresample_elem, m_audiosink_elem, nullptr);
 	}
 	else
 	{
@@ -1139,7 +1149,7 @@ bool main_pipeline::initialize_pipeline_nolock()
 		for (auto iter = m_processing_objects.begin() + 1; iter != m_processing_objects.end(); ++iter)
 			gst_element_link((*(iter - 1))->get_gst_element(), (*iter)->get_gst_element());
 
-		gst_element_link_many(m_processing_objects.back()->get_gst_element(), audioqueue_elem, audioconvert_elem, audioresample_elem, m_audiosink_elem, nullptr);
+		gst_element_link_many(m_processing_objects.back()->get_gst_element(), m_audioqueue_elem, audioconvert_elem, audioresample_elem, m_audiosink_elem, nullptr);
 	}
 
 	// Setup the pipeline bus
@@ -1200,6 +1210,7 @@ void main_pipeline::shutdown_pipeline_nolock(bool const p_set_state)
 
 	m_pipeline_elem = nullptr;
 	m_concat_elem = nullptr;
+	m_audioqueue_elem = nullptr;
 	m_audiosink_elem = nullptr;
 
 	NXPLAY_LOG_MSG(debug, "pipeline shut down");
@@ -1816,10 +1827,111 @@ void main_pipeline::shutdown_timeouts_nolock()
 }
 
 
-GstBusSyncReply main_pipeline::static_bus_sync_handler(GstBus *, GstMessage *p_msg, gpointer)
+GstBusSyncReply main_pipeline::static_bus_sync_handler(GstBus *, GstMessage *p_msg, gpointer p_data)
 {
+	main_pipeline *self = static_cast < main_pipeline* > (p_data);
+
 	switch (GST_MESSAGE_TYPE(p_msg))
 	{
+		case GST_MESSAGE_STREAM_STATUS:
+		{
+			GstStreamStatusType status_type;
+			GstElement *element;
+
+			// The steps below are all related to thread scheduling control.
+			// skip if it is not needed.
+			if (!(self->m_thread_sched_settings))
+				break;
+
+			gst_message_parse_stream_status(p_msg, &status_type, &element);
+
+			switch (status_type)
+			{
+				case GST_STREAM_STATUS_TYPE_ENTER:
+				{
+					// A new thread was started by the GStreamer pipeline.
+
+					std::unique_lock < std::mutex > lock(self->m_thread_priority_mutex);
+
+					pthread_t thread_ = pthread_self();
+					bool is_audiothread = false;
+					bool is_current;
+
+					// Check if the source of the thread is one of the current stream's elements
+					{
+						std::unique_lock < std::mutex > lock(self->m_loop_mutex);
+						is_current = self->m_current_stream && self->m_current_stream->contains_object(GST_OBJECT_CAST(element));
+					}
+
+					if (is_current)
+					{
+						NXPLAY_LOG_MSG(trace, "setting priority of thread \"" << get_thread_name(thread_) << "\" from current stream");
+					}
+					else if ((element == self->m_audioqueue_elem) || (element == self->m_audiosink_elem))
+					{
+						NXPLAY_LOG_MSG(trace, "setting priority of audio output branch element thread \"" << get_thread_name(thread_) << "\"");
+						is_audiothread = true;
+					}
+
+					if (is_audiothread)
+					{
+						// Thread originates from within one of the audio sink related elements.
+						// (These include the audioqueue.)
+						// Apply the appropriate settings from m_thread_sched_settings.
+
+						struct sched_param param;
+						param.sched_priority = self->m_thread_sched_settings->m_audio_thread_priority;
+						int ret = pthread_setschedparam(thread_, self->m_thread_sched_settings->m_audio_thread_policy, &param);
+						if (ret != 0)
+							NXPLAY_LOG_MSG(error, "could not set thread priority for thread \"" << get_thread_name(thread_) << "\": " << std::strerror(ret));
+					}
+					else if (is_current)
+					{
+						// Thread originates from within the current stream. Apply
+						// the appropriate settings from m_thread_sched_settings.
+
+						struct sched_param param;
+						param.sched_priority = self->m_thread_sched_settings->m_cur_stream_thread_priority;
+						int ret = pthread_setschedparam(thread_, self->m_thread_sched_settings->m_cur_stream_thread_policy, &param);
+						if (ret != 0)
+							NXPLAY_LOG_MSG(error, "could not set thread priority for thread \"" << get_thread_name(thread_) << "\": " << std::strerror(ret));
+					}
+					else
+					{
+						// If this location is reached, then it means that the generated
+						// thread must belong to a next stream. Don't set its policy and
+						// priority yet; instead, store its handle in a list. Once this
+						// next stream becomes the current stream, the policies of its
+						// threads can then be set to the current stream settings in
+						// m_thread_sched_settings.
+						NXPLAY_LOG_MSG(trace, "adding thread \"" << get_thread_name(thread_) << "\" to list");
+						self->m_pipeline_thread_list.push_back(thread_);
+					}
+
+					break;
+				}
+
+				case GST_STREAM_STATUS_TYPE_LEAVE:
+				{
+					// A thread that got started by the GStreamer pipeline earlier is now being shut down.
+
+					std::unique_lock < std::mutex > lock(self->m_thread_priority_mutex);
+					pthread_t thread_ = pthread_self();
+
+					NXPLAY_LOG_MSG(trace, "removing thread \"" << get_thread_name(thread_) << "\" from list");
+					// Try to remove this thread from the thread list in case it was recorded there.
+					self->m_pipeline_thread_list.remove(thread_);
+
+					break;
+				}
+
+				default:
+					break;
+			}
+
+			break;
+		}
+
 		case GST_MESSAGE_ERROR:
 		{
 			// If the error message came from an object which has
@@ -1867,6 +1979,13 @@ gboolean main_pipeline::static_bus_watch(GstBus *, GstMessage *p_msg, gpointer p
 		{
 			if (gst_message_has_name(p_msg, stream_eos_msg_name))
 				NXPLAY_LOG_MSG(trace, "received message from stream EOS probe");
+
+			// Since this location is reached once the stream EOS probe sees
+			// an EOS, and therefore the next stream has just become the current one,
+			// it is an appropriate place to modify the now-current stream's thread
+			// settings to match those in m_thread_priority_mutex.
+			if (self->m_thread_sched_settings)
+				self->set_thread_scheduling_nolock(self->m_thread_sched_settings->m_cur_stream_thread_policy, self->m_thread_sched_settings->m_cur_stream_thread_priority);
 
 			break;
 		}
@@ -2486,6 +2605,14 @@ void main_pipeline::thread_main()
 {
 	std::unique_lock < std::mutex > lock(m_loop_mutex);
 
+	// This is the GLib mainloop's thread. Apply the appropriate settings
+	// from m_thread_sched_settings (if set).
+	thread_priority_change priority;
+	if (m_thread_sched_settings)
+		priority.set_priority(m_thread_sched_settings->m_mainloop_thread_policy, m_thread_sched_settings->m_mainloop_thread_priority);
+
+	pthread_setname_np(pthread_self(), "nxplay-mainloop");
+
 	// Setup an explciit loop context. This is necessary to avoid collisions
 	// with any other "default" context that may be present in the application 
 	// for example.
@@ -2578,6 +2705,26 @@ gboolean main_pipeline::static_loop_start_cb(gpointer p_data)
 	// The idle source only needs to run once; let GLib remove
 	// it after this call
 	return G_SOURCE_REMOVE;
+}
+
+
+void main_pipeline::set_thread_scheduling_nolock(int const p_policy, int const p_priority)
+{
+	std::unique_lock < std::mutex > (m_thread_priority_mutex);
+
+	struct sched_param param;
+	memset(&param, 0, sizeof(param));
+	param.sched_priority = p_priority;
+
+	for (pthread_t thread_ : m_pipeline_thread_list)
+	{
+		NXPLAY_LOG_MSG(trace, "setting priority of thread \"" << get_thread_name(thread_) << "\"");
+		int ret = pthread_setschedparam(thread_, p_policy, &param);
+		if (ret != 0)
+			NXPLAY_LOG_MSG(error, "could not set thread priority: " << std::strerror(ret));
+	}
+
+	m_pipeline_thread_list.clear();
 }
 
 

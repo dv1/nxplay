@@ -69,31 +69,6 @@ void print_commands(command_map const &p_command_map)
 }
 
 
-void set_realtime_scheduling()
-{
-	int err, old_policy;
-	struct sched_param param;
-
-	err = pthread_getschedparam(pthread_self(), &old_policy, &param);
-	if (err != 0)
-	{
-		std::cerr << "Could not retrieve thread scheduling parameters: " << std::strerror(err) << "\n";
-		return;
-	}
-
-	param.sched_priority = sched_get_priority_min(SCHED_RR);
-
-	err = pthread_setschedparam(pthread_self(), SCHED_RR, &param);
-	if (err != 0)
-	{
-		std::cerr << "Could not set thread scheduling parameters: " << std::strerror(err) << "\n";
-		return;
-	}
-
-	std::cerr << "Threads now running with realtime scheduling\n";
-}
-
-
 }
 
 
@@ -102,7 +77,7 @@ int main(int argc, char *argv[])
 	int ret = 0;
 
 
-	set_realtime_scheduling();
+	pthread_setname_np(pthread_self(), "main-thread");
 
 
 	// Set up nxplay log
@@ -215,8 +190,15 @@ int main(int argc, char *argv[])
 			std::cerr << "New tags for current media with URI " << p_current_media.get_uri() << " and token " << p_token << ": " << nxplay::to_string(p_tag_list) << "\n";
 		};
 
+		nxplay::thread_sched_settings sched_settings =
+		{
+			SCHED_RR, sched_get_priority_min(SCHED_RR) + 1,
+			SCHED_RR, sched_get_priority_min(SCHED_RR) + 0,
+			SCHED_RR, sched_get_priority_min(SCHED_RR) + 0
+		};
+
 		nxplay::soft_volume_control volobj;
-		nxplay::main_pipeline pipeline(callbacks, GST_SECOND * 5, 500, false, { &volobj });
+		nxplay::main_pipeline pipeline(callbacks, GST_SECOND * 5, 500, false, { &volobj }, sched_settings);
 
 
 		// Set up command map
