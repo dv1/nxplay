@@ -157,6 +157,7 @@ main_pipeline::stream::stream(main_pipeline &p_pipeline, guint64 const p_token, 
 	, m_buffer_size_limit(buffer_size_limit_default)
 	, m_effective_buffer_size_limit(0)
 	, m_buffering_timeout_enabled(true)
+	, m_full_buffering_was_seen(false)
 {
 	assert(m_container_bin != nullptr);
 
@@ -521,6 +522,18 @@ void main_pipeline::stream::block_buffering(bool const p_do_block)
 	}
 
 	m_block_condition.notify_all();
+}
+
+
+void main_pipeline::stream::full_buffering_was_seen(bool const p_state)
+{
+	m_full_buffering_was_seen = p_state;
+}
+
+
+bool main_pipeline::stream::has_full_buffering_been_seen() const
+{
+	return m_full_buffering_was_seen;
 }
 
 
@@ -1420,6 +1433,12 @@ void main_pipeline::set_current_position_nolock(gint64 const p_new_position, pos
 	if ((m_state != state_paused) && (m_state != state_playing))
 		return;
 
+	// A seek operation will cause a flush and will require buffering again.
+	// Therefore, reset this flag to avoid brief intermediate states where
+	// a little bit of audio is played before buffering.
+	if (m_current_stream)
+		m_current_stream->full_buffering_was_seen(false);
+
 	NXPLAY_LOG_MSG(debug, "set_current_position() called, unit " << pos_unit_description(p_unit) << "; switching to seeking state");
 
 	// save current paused status, since it needs to be
@@ -1567,7 +1586,7 @@ bool main_pipeline::finish_seeking_nolock(bool const p_set_state_after_seeking)
 		{
 			// The pipeline wasn't in the paused state when seeking started
 
-			if (m_current_stream && m_current_stream->performs_buffering())
+			if (m_current_stream && m_current_stream->performs_buffering() && !(m_current_stream->has_full_buffering_been_seen()))
 			{
 				// Seek was performed on a stream that buffers. This means
 				// that the internal stream queue is empty now, and will
@@ -1578,6 +1597,12 @@ bool main_pipeline::finish_seeking_nolock(bool const p_set_state_after_seeking)
 				// be in the buffering state. So, instead, let's just switch
 				// to the buffering state here directly, avoiding this brief
 				// bit of playback.
+				// There is one exception to the rule above, and that is when
+				// buffering for some reason finishes so quickly, it reaches
+				// 100% before this location is reached. This would lead to
+				// an error, because the pipeline would be set to the buffering
+				// state even though 100% was already reached. For this reason,
+				// the has_full_buffering_been_seen() is used above.
 
 				NXPLAY_LOG_MSG(debug, "seeking finished; switching to buffering state");
 				m_current_stream->set_buffering(true);
@@ -1585,7 +1610,8 @@ bool main_pipeline::finish_seeking_nolock(bool const p_set_state_after_seeking)
 			}
 			else
 			{
-				// Seek was performed on a stream that doesn't buffer.
+				// Seek was performed on a stream that doesn't buffer, or that already
+				// finished buffering.
 				// The pipeline can be switched to the PLAYING GStreamer state now.
 				// (The bus watch will handle the pipeline state_seeking -> state_playing
 				// state change once it happens, which is cleaner than switching here
@@ -2030,14 +2056,23 @@ gboolean main_pipeline::static_bus_watch(GstBus *, GstMessage *p_msg, gpointer p
 								}
 								else
 								{
-									// Handle buffering state updates if this is a non-live source
+									// Handle buffering state updates if this is a non-live source.
 									// If the current stream is not buffering, we can switch to
-									// PLAYING immediately; otherwise, switch to buffering state until
+									// PLAYING immediately. Otherwise, switch to buffering state until
 									// buffering is done (handled by the GST_MESSAGE_BUFFERING
-									// code below)
-									if (!(self->m_current_stream->is_live()) && self->m_current_stream->is_buffering())
+									// code below). Also, an edge case is be handled: sometimes,
+									// the PAUSED state (and therefore this location) is reached before
+									// any buffering starts. This would lead to a switch to PLAYING,
+									// and therefore to a brief bit of playback, before buffering kicks
+									// in. For this reason, performs_buffering() is used (and not
+									// is_buffering()). Plus, in case buffering happened so fast it
+									// already reached 100% by the time this location is reached, the
+									// has_full_buffering_been_seen() ensures that the pipeline isn't
+									// incorrectly set to the buffering state.
+									if (!(self->m_current_stream->is_live()) && self->m_current_stream->performs_buffering() && !(self->m_current_stream->has_full_buffering_been_seen()))
 									{
-										NXPLAY_LOG_MSG(debug, "current stream is still buffering during startup; switching pipeline to buffering state");
+										NXPLAY_LOG_MSG(debug, "current stream needs to buffer; switching pipeline to buffering state");
+										self->m_current_stream->set_buffering(true);
 										self->set_state_nolock(state_buffering);
 									}
 									else
@@ -2347,6 +2382,9 @@ gboolean main_pipeline::static_bus_watch(GstBus *, GstMessage *p_msg, gpointer p
 				}
 				else
 				{
+					// 100% were reached: mark this in the stream
+					stream_->full_buffering_was_seen(true);
+
 					if (stream_->is_buffering())
 					{
 						NXPLAY_LOG_MSG(debug, label << " stream's buffer fill level is enough; disabling buffering flag");

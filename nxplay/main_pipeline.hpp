@@ -449,6 +449,9 @@ private:
 		void enable_buffering_timeout(bool const p_do_enable);
 		void block_buffering(bool const p_do_block);
 
+		void full_buffering_was_seen(bool const p_state);
+		bool has_full_buffering_been_seen() const;
+
 	private:
 		static void static_new_pad_callback(GstElement *p_uridecodebin, GstPad *p_pad, gpointer p_data);
 		static void static_element_added_callback(GstElement *p_uridecodebin, GstElement *p_element, gpointer p_data);
@@ -480,6 +483,8 @@ private:
 		guint m_buffer_size_limit;
 		guint m_effective_buffer_size_limit;
 		bool m_buffering_timeout_enabled;
+
+		bool m_full_buffering_was_seen;
 
 		guint m_low_buffer_threshold, m_high_buffer_threshold;
 
