@@ -194,7 +194,8 @@ int main(int argc, char *argv[])
 		{
 			SCHED_RR, sched_get_priority_min(SCHED_RR) + 1,
 			SCHED_RR, sched_get_priority_min(SCHED_RR) + 0,
-			SCHED_RR, sched_get_priority_min(SCHED_RR) + 0
+			SCHED_RR, sched_get_priority_min(SCHED_RR) + 0,
+			SCHED_OTHER, sched_get_priority_min(SCHED_OTHER)
 		};
 
 		nxplay::soft_volume_control volobj;

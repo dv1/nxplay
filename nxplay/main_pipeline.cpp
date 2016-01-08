@@ -1899,11 +1899,22 @@ GstBusSyncReply main_pipeline::static_bus_sync_handler(GstBus *, GstMessage *p_m
 					else
 					{
 						// If this location is reached, then it means that the generated
-						// thread must belong to a next stream. Don't set its policy and
-						// priority yet; instead, store its handle in a list. Once this
-						// next stream becomes the current stream, the policies of its
-						// threads can then be set to the current stream settings in
-						// m_thread_sched_settings.
+						// thread must belong to a next stream. Apply the next stream
+						// settings from m_thread_sched_settings to this thread, then
+						// store its handle in a list. Once this next stream becomes the
+						// current one, the policies of its threads will be set to the
+						// current stream settings in m_thread_sched_settings.
+						// (Typically, next-stream threads run at a lower priority and
+						// with a non-realtime schedule to prevent its activity from
+						// interrupting the more critical current-stream and audio
+						// threads too much.)
+
+						struct sched_param param;
+						param.sched_priority = self->m_thread_sched_settings->m_next_stream_thread_priority;
+						int ret = pthread_setschedparam(thread_, self->m_thread_sched_settings->m_next_stream_thread_policy, &param);
+						if (ret != 0)
+							NXPLAY_LOG_MSG(error, "could not set thread priority for thread \"" << get_thread_name(thread_) << "\": " << std::strerror(ret));
+
 						NXPLAY_LOG_MSG(trace, "adding thread \"" << get_thread_name(thread_) << "\" to list");
 						self->m_pipeline_thread_list.push_back(thread_);
 					}
