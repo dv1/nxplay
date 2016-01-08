@@ -1531,19 +1531,23 @@ void main_pipeline::update_durations_nolock()
 		"  bytes: " << new_duration_in_bytes
 	);
 
-	/* do duration updates if there is a current stream and a callback */
-	if (m_callbacks.m_duration_updated_callback && (m_current_stream != nullptr))
+	/* do duration updates if there is a current stream
+	 * the duration is needed both for the duration callback
+	 * and for the media-about-to-end callback */
+	if (m_current_stream != nullptr)
 	{
 		if (duration_in_nanoseconds_updated)
 		{
 			m_duration_in_nanoseconds = new_duration_in_nanoseconds;
-			m_callbacks.m_duration_updated_callback(m_current_stream->get_media(), m_current_stream->get_token(), new_duration_in_nanoseconds, position_unit_nanoseconds);
+			if (m_callbacks.m_duration_updated_callback)
+				m_callbacks.m_duration_updated_callback(m_current_stream->get_media(), m_current_stream->get_token(), new_duration_in_nanoseconds, position_unit_nanoseconds);
 		}
 
 		if (duration_in_bytes_updated)
 		{
 			m_duration_in_bytes = new_duration_in_bytes;
-			m_callbacks.m_duration_updated_callback(m_current_stream->get_media(), m_current_stream->get_token(), new_duration_in_bytes, position_unit_bytes);
+			if (m_callbacks.m_duration_updated_callback)
+				m_callbacks.m_duration_updated_callback(m_current_stream->get_media(), m_current_stream->get_token(), new_duration_in_bytes, position_unit_bytes);
 		}
 	}
 
