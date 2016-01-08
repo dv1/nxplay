@@ -50,6 +50,7 @@ def add_compiler_flags(conf, env, flags, lang, compiler, uselib = ''):
 
 def options(opt):
 	opt.add_option('--enable-debug', action = 'store_true', default = False, help = 'enable debug build')
+	opt.add_option('--enable-static', action = 'store_true', default = False, help = 'enable static build')
 	opt.add_option('--disable-docs', action = 'store_true', default = False, help = 'do not generate Doxygen documentation')
 	opt.load('compiler_cxx boost')
 
@@ -61,6 +62,9 @@ def configure(conf):
 	if not conf.options.disable_docs:
 		conf.load('doxygen', ['.'])
 		conf.env['BUILD_DOCS'] = True
+
+	if conf.options.enable_static:
+		conf.env['ENABLE_STATIC'] = True
 
 	if conf.env['CXXFLAGS']:
 		check_compiler_flags_2(conf, conf.env['CXXFLAGS'], '', "Testing compiler flags %s" % ' '.join(conf.env['CXXFLAGS']))
@@ -82,6 +86,11 @@ def configure(conf):
 
 
 def build(bld):
+	if bld.env['ENABLE_STATIC']:
+		bldtype = 'cxxstlib'
+	else:
+		bldtype = 'cxxshlib'
+
 	if bld.env['BUILD_DOCS']:
 		bld(
 			features = ['doxygen'],
@@ -89,7 +98,7 @@ def build(bld):
 			install_path = '${PREFIX}/doc')
 
 	bld(
-		features = ['cxx', 'cxxshlib'],
+		features = ['cxx', bldtype],
 		includes = ['.', 'nxplay'],
 		uselib = ['GSTREAMER', 'GSTREAMER_BASE', 'GSTREAMER_AUDIO', 'BOOST'],
 		target = 'nxplay',
