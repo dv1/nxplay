@@ -2626,7 +2626,11 @@ void main_pipeline::thread_main()
 	if (m_thread_sched_settings)
 		priority.set_priority(m_thread_sched_settings->m_mainloop_thread_policy, m_thread_sched_settings->m_mainloop_thread_priority);
 
-	pthread_setname_np(pthread_self(), "nxplay-mainloop");
+#ifdef __APPLE__
+    pthread_setname_np("nxplay-mainloop");
+#else
+    pthread_setname_np(pthread_self(), "nxplay-mainloop");
+#endif
 
 	// Setup an explciit loop context. This is necessary to avoid collisions
 	// with any other "default" context that may be present in the application 

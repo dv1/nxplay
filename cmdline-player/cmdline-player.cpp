@@ -77,7 +77,11 @@ int main(int argc, char *argv[])
 	int ret = 0;
 
 
-	pthread_setname_np(pthread_self(), "main-thread");
+#ifdef __APPLE__
+    pthread_setname_np("main-thread");
+#else
+    pthread_setname_np(pthread_self(), "main-thread");
+#endif
 
 
 	// Set up nxplay log
