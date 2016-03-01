@@ -8,6 +8,8 @@
  */
 
 #include <assert.h>
+#include <gst/gst.h>
+#include <gst/audio/audio.h>
 #include "log.hpp"
 #include "main_pipeline.hpp"
 #include "scope_guard.hpp"
@@ -1859,6 +1861,7 @@ GstBusSyncReply main_pipeline::static_bus_sync_handler(GstBus *, GstMessage *p_m
 
 					pthread_t thread_ = pthread_self();
 					bool is_audiothread = false;
+					bool is_audiosink = GST_IS_AUDIO_BASE_SINK(element);
 					bool is_current;
 
 					// Check if the source of the thread is one of the current stream's elements
@@ -1871,7 +1874,7 @@ GstBusSyncReply main_pipeline::static_bus_sync_handler(GstBus *, GstMessage *p_m
 					{
 						NXPLAY_LOG_MSG(trace, "setting priority of thread \"" << get_thread_name(thread_) << "\" from current stream");
 					}
-					else if ((element == self->m_audioqueue_elem) || (element == self->m_audiosink_elem))
+					else if ((element == self->m_audioqueue_elem) || is_audiosink)
 					{
 						NXPLAY_LOG_MSG(trace, "setting priority of audio output branch element thread \"" << get_thread_name(thread_) << "\"");
 						is_audiothread = true;
