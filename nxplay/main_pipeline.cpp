@@ -1117,6 +1117,7 @@ bool main_pipeline::initialize_pipeline_nolock()
 		return false;
 	}
 
+	g_object_set(G_OBJECT(m_audioqueue_elem), "max-size-time", guint64(GST_MSECOND * 400), NULL);
 	g_object_set(G_OBJECT(audioresample_elem), "quality", 0, nullptr);
 
 	for (auto obj : m_processing_objects)
