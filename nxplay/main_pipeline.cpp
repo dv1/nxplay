@@ -1867,7 +1867,7 @@ GstBusSyncReply main_pipeline::static_bus_sync_handler(GstBus *, GstMessage *p_m
 
 					// Check if the source of the thread is one of the current stream's elements
 					{
-						std::unique_lock < std::mutex > lock(self->m_loop_mutex);
+						std::unique_lock < std::mutex > lock(self->m_stream_mutex);
 						is_current = self->m_current_stream && self->m_current_stream->contains_object(GST_OBJECT_CAST(element));
 					}
 
