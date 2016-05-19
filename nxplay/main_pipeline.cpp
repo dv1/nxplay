@@ -1389,23 +1389,6 @@ void main_pipeline::set_paused_nolock(bool const p_paused)
 	)
 		return;
 
-	if (m_current_stream->is_live())
-	{
-		// This case might be less obvious, so log it
-		// Live pipelines cannot be paused
-		NXPLAY_LOG_MSG(info, "current stream is live, cannot pause");
-		return;
-	}
-
-	if (!(m_current_stream->is_live_status_known()))
-	{
-		// To be on the safe side, don't pause if the live
-		// status isn't known, in case it later turns out
-		// to be live
-		NXPLAY_LOG_MSG(info, "current stream's live status is not known yet, cannot pause");
-		return;
-	}
-
 	// Pipeline is transitioning; postpone the call
 	if (is_transitioning_nolock())
 	{
