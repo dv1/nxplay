@@ -10,6 +10,7 @@
 #include <assert.h>
 #include <gst/gst.h>
 #include <gst/audio/audio.h>
+#include <gst/rtsp/gstrtsptransport.h>
 #include "log.hpp"
 #include "main_pipeline.hpp"
 #include "scope_guard.hpp"
@@ -222,6 +223,7 @@ main_pipeline::stream::stream(main_pipeline &p_pipeline, guint64 const p_token, 
 	g_object_set(G_OBJECT(m_uridecodebin_elem), "uri", m_media.get_uri().c_str(), "async-handling", gboolean(TRUE), NULL);
 	g_signal_connect(G_OBJECT(m_uridecodebin_elem), "pad-added", G_CALLBACK(static_new_pad_callback), gpointer(this));
 	g_signal_connect(G_OBJECT(m_uridecodebin_elem), "element-added", G_CALLBACK(static_element_added_callback), gpointer(this));
+	g_signal_connect(G_OBJECT(m_uridecodebin_elem), "source-setup", G_CALLBACK(static_source_setup_callback), gpointer(this));
 
 	// Configure buffering values
 
@@ -617,6 +619,139 @@ void main_pipeline::stream::static_element_added_callback(GstElement *, GstEleme
 }
 
 
+void main_pipeline::stream::static_rtpbin_pad_added_callback(GstElement *, GstPad *p_pad, gpointer p_data)
+{
+	if (gst_pad_get_direction(p_pad) != GST_PAD_SRC)
+		return;
+
+	// Check if the new pad is an RTP pad. If so, add a pad probe to
+	// it to intercept custom downstream events. Packet losses are
+	// signaled as events of that type.
+
+	GstCaps *caps = gst_pad_query_caps(p_pad, nullptr);
+	GstStructure *s = gst_caps_get_structure(caps, 0);
+	gchar const *pad_name = gst_structure_get_name(s);
+	bool match = (g_strcmp0(pad_name, "application/x-rtp") == 0);
+	NXPLAY_LOG_MSG(debug, "rtpbin pad \"" << pad_name << "\" found - needs packet loss probe: " << match);
+	gst_caps_unref(caps);
+	if (!match)
+		return;
+
+	gst_pad_add_probe(
+		p_pad,
+		GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM,
+		static_rtp_packet_loss_probe,
+		p_data,
+		nullptr
+	);
+}
+
+
+void main_pipeline::stream::static_rtp_element_added_callback(GstElement *, GstElement *p_element, gpointer p_data)
+{
+	if (check_if_element_from_factory(p_element, "rtpbin"))
+	{
+		NXPLAY_LOG_MSG(debug, "found rtpbin inside RTSP source element");
+
+		// Enable packet loss events
+		g_object_set(G_OBJECT(p_element), "do-lost", gboolean(TRUE), nullptr);
+		// Add callback to attach event pad probes
+		g_signal_connect(G_OBJECT(p_element), "pad-added", G_CALLBACK(static_rtpbin_pad_added_callback), p_data);
+	}
+}
+
+
+void main_pipeline::stream::static_source_setup_callback(GstElement *, GstElement *p_element, gpointer p_data)
+{
+	stream *self = static_cast < stream* > (p_data);
+
+	if (check_if_element_from_factory(p_element, "rtspsrc"))
+	{
+		// Add callback to configure the rtpbin that is used inside rtspsrc
+		g_signal_connect(G_OBJECT(p_element), "element-added", G_CALLBACK(static_rtp_element_added_callback), p_data);
+
+		playback_properties const &pprops = self->m_playback_properties;
+
+		guint protocols = 0;
+
+		if (pprops.m_allowed_transports == boost::none)
+		{
+			NXPLAY_LOG_MSG(debug, "enabling default RTSP transports (TCP&UDP)");
+			protocols = GST_RTSP_LOWER_TRANS_UDP | GST_RTSP_LOWER_TRANS_TCP;
+		}
+		else
+		{
+			guint32 allowed_transports = *(pprops.m_allowed_transports);
+
+			if (allowed_transports & transport_protocol_udp)
+			{
+				NXPLAY_LOG_MSG(debug, "enabling UDP transport for RTSP");
+				protocols |= GST_RTSP_LOWER_TRANS_UDP;
+			}
+			if (allowed_transports & transport_protocol_tcp)
+			{
+				NXPLAY_LOG_MSG(debug, "enabling TCP transport for RTSP");
+				protocols |= GST_RTSP_LOWER_TRANS_TCP;
+			}
+		}
+
+		gboolean do_retransmissions = (pprops.m_do_retransmissions == boost::none) ? TRUE : gboolean(*(pprops.m_do_retransmissions));
+		guint64 jitter_buffer_length = (pprops.m_jitter_buffer_length == boost::none) ? guint64(2000) : *(pprops.m_jitter_buffer_length);
+
+		NXPLAY_LOG_MSG(debug, "RTSP:  jitter buffer length: " << jitter_buffer_length << " ms  do retransmissions: " << (do_retransmissions ? "yes" : "no"));
+
+		g_object_set(
+			G_OBJECT(p_element),
+			"protocols", protocols,
+			"do-retransmission", do_retransmissions,
+			"latency", jitter_buffer_length,
+			nullptr
+		);
+	}
+}
+
+
+GstPadProbeReturn main_pipeline::stream::static_rtp_packet_loss_probe(GstPad *, GstPadProbeInfo *p_info, gpointer p_data)
+{
+	stream *self = static_cast < stream* > (p_data);
+
+	if (G_UNLIKELY((p_info->type & GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM) == 0))
+		return GST_PAD_PROBE_OK;
+
+	GstEvent *event = gst_pad_probe_info_get_event(p_info);
+	switch (GST_EVENT_TYPE(event))
+	{
+		case GST_EVENT_CUSTOM_DOWNSTREAM:
+		{
+			// rtpjitterbuffer (which is inside the rtpbin
+			// that is inside rtspsrc) generates this event.
+			// So far, there is no dedicated packet loss event
+			// type, and custom downstream events are used instead.
+			if (gst_event_has_name(event, "GstRTPPacketLost"))
+			{
+				GstStructure const *s = gst_event_get_structure(event);
+				guint num_packets = 1;
+
+				if (gst_structure_has_field(s, "num-packets"))
+					gst_structure_get_uint(s, "num-packets", &num_packets);
+
+				NXPLAY_LOG_MSG(debug, "detected " << num_packets << " lost or too-late packet(s)");
+
+				if (self->m_pipeline.m_callbacks.m_packet_loss_callback)
+					self->m_pipeline.m_callbacks.m_packet_loss_callback(self->m_media, self->m_token, num_packets);
+			}
+
+			break;
+		}
+
+		default:
+			break;
+	}
+
+	return GST_PAD_PROBE_OK;
+}
+
+
 GstPadProbeReturn main_pipeline::stream::static_tag_probe(GstPad *, GstPadProbeInfo *p_info, gpointer p_data)
 {
 	stream *self = static_cast < stream* > (p_data);
@@ -648,7 +783,7 @@ GstPadProbeReturn main_pipeline::stream::static_tag_probe(GstPad *, GstPadProbeI
 			}
 
 			break;
-		};
+		}
 
 		default:
 			break;

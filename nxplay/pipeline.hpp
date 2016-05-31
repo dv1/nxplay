@@ -55,6 +55,25 @@ enum states
 };
 
 
+/// Allowed transport protocols for incoming network streams
+/**
+ * These are flags which can be bitwise-OR combined to inform the pipeline what transports
+ * shall be permitted for input network streams. Note that these flags are not used by
+ * all protocols. For example, HTTP always uses TCP.
+ *
+ * Currently, RTSP is the only protocol that can be configured with these flags.
+ * With RTSP, UDP is preferred over TCP if both are available. By default, UDP and TCP
+ * are allowed.
+ */
+enum transport_protocols
+{
+	/// Allow UDP-based data transport
+	transport_protocol_udp = 0x01,
+	/// Allow TCP-based data transport
+	transport_protocol_tcp = 0x02
+};
+
+
 /// Positioning units.
 /**
  * These are needed for duration updates and playback position requests. nxplay supports
@@ -79,7 +98,30 @@ std::string get_state_name(states const p_state);
  * They make it possible to start playback in paused state, to seek right
  * when starting playback, and to adjust the streaming buffer size/duration.
  *
- * The buffering is controlled by three properties: estimation duration,
+ * There are two types of network connections: stream-based and packet-based.
+ *
+ * Stream-based connections are used with HTTP for example, and use the stream
+ * buffering. Stream buffering essentially downloads the first N bytes and
+ * fills a buffer with the downloaded content. Once the buffer is filled enough,
+ * playback can start. During playback, the download continues at the same rate
+ * as the data is consumed.
+ *
+ * Packet-based connections explicitely operate on discrete packets. One example
+ * is RTSP. By default, RTSP uses UDP for the media transport, but can also use
+ * TCP. But even with TCP, it transmits packets, and not a stream. With packets,
+ * the stream buffering makes no sense. Instead, a jitter buffer is used. This
+ * jitter buffer retains received packets for a given period (which is the
+ * m_jitter_buffer_length value below). Packets can be up to this many milli-
+ * seconds late. Any packets that arrive later than that are discarded, and the
+ * rest of the pipeline considers them lost. Truly lost packets are also detected
+ * and reported. In both cases, the packet_loss_callback is invoked. Buffer levels
+ * also do not exist with packet-based connections.
+ *
+ *
+ * Configuring the stream buffer (for stream-based connections):
+ * -------------------------------------------------------------
+ *
+ * The stream buffering is controlled by three properties: estimation duration,
  * timeout, and size.
  *
  * Size is an explicit maximum size for the buffering, in bytes. This value
@@ -115,6 +157,28 @@ std::string get_state_name(states const p_state);
  * filled until it contains 10 MB (or until the end-of-stream is reached).
  * m_low_buffer_threshold must always be smaller than m_high_buffer_threshold.
  * The default values are 10 for m_low_buffer_threshold and 99 for m_high_buffer_threshold.
+ *
+ * The m_allowed_transports value is ignored with stream-based connections.
+ *
+ *
+ * Configuring the jitter buffer (for packet-based connections):
+ * -------------------------------------------------------------
+ *
+ * The m_jitter_buffer_length value specifies how late packets can be. Packet-based
+ * connections have real-time characteristics, meaning that packets must arrive
+ * on time. Since the transport delay from sender to receiver is never zero,
+ * packets are given a grace period for arriving. This period is m_jitter_buffer_length.
+ * By default, 2 seconds are used. Higher values increase robustness, but also cause
+ * noticeable delays when starting reception, pausing/unpausing, and seeking. Lower
+ * values increase responsiveness, but reduce robustness (for example, if on average,
+ * packets arrive 300ms late, and the jitter buffer length is set to 290 ms, then
+ * packets will often be considered lost.
+ *
+ * The m_allowed_transports value is respected by some packet-based connections.
+ * See the transport_protocols documentation for details.
+ *
+ * m_do_retransmissions specifies whether or not the server shall be asked to
+ * retransmit lost packets. By default, retransmissions are done.
  */
 struct playback_properties
 {
@@ -154,6 +218,26 @@ struct playback_properties
 	 */
 	boost::optional < guint > m_high_buffer_threshold;
 
+	/// Length of the packet jitter buffer, in milliseconds.
+	/**
+	 * See the descriptions for the jitter buffer and packet-based connections in the
+	 * playback_properties documentation above for details.
+	 */
+	boost::optional < guint64 > m_jitter_buffer_length;
+
+	/// Whether or not to do retransmissions in case of packet loss.
+	/**
+	 * See the retransmission description in the playback_properties documentation for details.
+	 */
+	boost::optional < bool > m_do_retransmissions;
+
+	/// Which transports shall be permitted with network connections.
+	/**
+	 * Default permissions vary from protocol to protocol. See the transport_protocols
+	 * documentation for details.
+	 */
+	boost::optional < guint32 > m_allowed_transports;
+
 	/// Default constructor. Sets the values above to their defaults.
 	playback_properties();
 
@@ -166,7 +250,10 @@ struct playback_properties
 		boost::optional < guint64 > const &p_buffer_duration_timeout,
 		boost::optional < guint > const &p_buffer_size,
 		boost::optional < guint > const &p_low_buffer_threshold,
-		boost::optional < guint > const &p_high_buffer_threshold
+		boost::optional < guint > const &p_high_buffer_threshold,
+		boost::optional < guint64 > const &p_jitter_buffer_length,
+		boost::optional < bool > const &p_do_retransmissions,
+		boost::optional < guint32 > const p_allowed_transports
 	);
 };
 
@@ -334,7 +421,7 @@ public:
 	 * This call is postponed if the pipeline is in a transitional state, and executed
 	 * as soon as the transition ends. Pipelines do not have to support seeking, and can
 	 * ignore this call if they don't, since seeking may not be supported with certain
-	 * media (for example, RTSP or HTTP radio streams). Some media might also only
+	 * media (for example, some RTSP & HTTP radio streams). Some media might also only
 	 * support byte seeks, or nanosecond seeks (in practice, the latter is supported by
 	 * pretty much all types of media that can seek in general, so it is a safe bet to
 	 * use it).

@@ -12,6 +12,7 @@
 #ifndef NXPLAY_UTILITY_HPP
 #define NXPLAY_UTILITY_HPP
 
+#include <string>
 #include <gst/gst.h>
 
 
@@ -92,6 +93,13 @@ private:
 	int m_original_policy;
 	struct sched_param m_original_sched_param;
 };
+
+
+/// Returns true if the given element was created by the factory with the given name.
+bool check_if_element_from_factory(GstElement *p_element, std::string const &p_factory_name);
+
+/// Returns the first element in the given bin that was created by the factory with the given name.
+GstElement *find_element_by_factory_name(GstBin *p_bin, std::string const &p_factory_name);
 
 
 } // namespace nxplay end

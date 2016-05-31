@@ -137,6 +137,10 @@ int main(int argc, char *argv[])
 				std::cerr << "<undefined>";
 			std::cerr << " bytes)  media uri: " << p_media.get_uri() << " token: " << p_token << "  current: " << p_is_current_media << " limit: " << p_limit << "\n";
 		};
+		callbacks.m_packet_loss_callback = [](nxplay::media const &p_current_media, guint64 const p_token, unsigned int const p_packet_count)
+		{
+			std::cerr << "Packet loss detected: " << p_packet_count << " packet(s) lost, current media URI: " << p_current_media.get_uri() << " token: " << p_token << "\n";
+		};
 		callbacks.m_duration_updated_callback = [](nxplay::media const &p_current_media, guint64 const p_token, gint64 const p_new_duration, nxplay::position_units const p_unit)
 		{
 			switch (p_unit)
@@ -206,6 +210,12 @@ int main(int argc, char *argv[])
 		nxplay::main_pipeline pipeline(callbacks, GST_SECOND * 5, 500, false, { &volobj }, sched_settings);
 
 
+		nxplay::playback_properties props;
+		props.m_allowed_transports = nxplay::transport_protocol_tcp;
+		props.m_jitter_buffer_length = 1500;
+		props.m_do_retransmissions = true;
+
+
 		// Set up command map
 		command_map commands;
 		commands["play"] =
@@ -213,7 +223,7 @@ int main(int argc, char *argv[])
 			[&](cmdline_player::tokens const &p_tokens)
 			{
 				bool now = (p_tokens.size() > 2) ? (p_tokens[2] != "no") : true;
-				pipeline.play_media(pipeline.get_new_token(), nxplay::media(p_tokens[1]), now);
+				pipeline.play_media(pipeline.get_new_token(), nxplay::media(p_tokens[1]), now, props);
 				return true;
 			},
 			1, "<URI> <now yes/no>",
@@ -361,9 +371,9 @@ int main(int argc, char *argv[])
 		std::cerr << "Type help to get a list of valid commands\n\n";
 
 		if (argc > 1)
-			pipeline.play_media(pipeline.get_new_token(), nxplay::media(argv[1]), true);
+			pipeline.play_media(pipeline.get_new_token(), nxplay::media(argv[1]), true, props);
 		if (argc > 2)
-			pipeline.play_media(pipeline.get_new_token(), nxplay::media(argv[2]), false);
+			pipeline.play_media(pipeline.get_new_token(), nxplay::media(argv[2]), false, props);
 
 		try
 		{

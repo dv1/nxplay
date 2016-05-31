@@ -180,6 +180,9 @@ public:
 	 * The call intervals are determined by the p_update_interval argument in
 	 * the main_pipeline constructor.
 	 *
+	 * This callback is not invoked with packet-based connections. See the
+	 * playback_properties documentation for details.
+	 *
 	 * @param p_current_media Const reference to internal new current media
 	 * @param p_token Associated playback token (see pipeline::play_media() )
 	 * @param p_level Fill level of the current stream's buffer, in bytes
@@ -210,6 +213,9 @@ public:
 	 * even if the low and high thresholds are different. These 0-100% refer to the interval
 	 * defined by the buffering properties here.
 	 *
+	 * This callback is not invoked with packet-based connections. See the
+	 * playback_properties documentation for details.
+	 *
 	 * @param p_media Media that is buffering
 	 * @param p_token Associated playback token (see pipeline::play_media() )
 	 * @param p_is_current_media true if p_media is the current media (in which case the
@@ -220,6 +226,20 @@ public:
 	 * @param p_limit Current level limit, in bytes
 	 */
 	typedef std::function < void(media const &p_media, guint64 const p_token, bool const p_is_current_media, unsigned int const p_percentage, boost::optional < guint > const p_level, guint const p_limit) > buffering_updated_callback;
+	/// Notifies about packet loss.
+	/**
+	 * Whenever a packet (for example, in the RTSP case, an RTP packet) is lost or didn't
+	 * arrive in time, this callback is invoked. Normally, p_packet_count is 1. If the
+	 * loss of several consecutive packets is detected, this value may be higher.
+	 *
+	 * This callback is not used with stream-based connections such as HTTP, which use
+	 * TCP as the transport.
+	 *
+	 * @param p_current_media Const reference to internal new current media
+	 * @param p_token Associated playback token (see pipeline::play_media() )
+	 * @param p_packet_count How many packets got lost in a sequence
+	 */
+	typedef std::function < void(media const &p_current_media, guint64 const p_token, unsigned int const p_packet_count) > packet_loss_callback;
 	/// Notifies about a newly determined duration value for the current media.
 	/**
 	 * Duration updates might happen more than once for the same current media. With
@@ -320,6 +340,7 @@ public:
 		buffer_level_callback       m_buffer_level_callback;
 		state_changed_callback      m_state_changed_callback;
 		buffering_updated_callback  m_buffering_updated_callback;
+		packet_loss_callback        m_packet_loss_callback;
 		duration_updated_callback   m_duration_updated_callback;
 		is_seekable_callback        m_is_seekable_callback;
 		is_live_callback            m_is_live_callback;
@@ -512,6 +533,10 @@ private:
 	private:
 		static void static_new_pad_callback(GstElement *p_uridecodebin, GstPad *p_pad, gpointer p_data);
 		static void static_element_added_callback(GstElement *p_uridecodebin, GstElement *p_element, gpointer p_data);
+		static void static_rtp_element_added_callback(GstElement *p_uridecodebin, GstElement *p_element, gpointer p_data);
+		static void static_rtpbin_pad_added_callback(GstElement *, GstPad *p_pad, gpointer p_data);
+		static void static_source_setup_callback(GstElement *p_uridecodebin, GstElement *p_element, gpointer p_data);
+		static GstPadProbeReturn static_rtp_packet_loss_probe(GstPad *, GstPadProbeInfo *p_info, gpointer p_data);
 		static GstPadProbeReturn static_tag_probe(GstPad *p_pad, GstPadProbeInfo *p_info, gpointer p_data);
 		static GstPadProbeReturn static_buffering_block_probe(GstPad *p_pad, GstPadProbeInfo *p_info, gpointer p_data);
 

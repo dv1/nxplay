@@ -39,6 +39,9 @@ playback_properties::playback_properties()
 	, m_buffer_size(boost::none)
 	, m_low_buffer_threshold(boost::none)
 	, m_high_buffer_threshold(boost::none)
+	, m_jitter_buffer_length(boost::none)
+	, m_do_retransmissions(boost::none)
+	, m_allowed_transports(boost::none)
 {
 }
 
@@ -51,7 +54,10 @@ playback_properties::playback_properties(
 	boost::optional < guint64 > const &p_buffer_timeout,
 	boost::optional < guint > const &p_buffer_size,
 	boost::optional < guint > const &p_low_buffer_threshold,
-	boost::optional < guint > const &p_high_buffer_threshold
+	boost::optional < guint > const &p_high_buffer_threshold,
+	boost::optional < guint64 > const &p_jitter_buffer_length,
+	boost::optional < bool > const &p_do_retransmissions,
+	boost::optional < guint32 > const p_allowed_transports
 )
 	: m_start_paused(p_start_paused)
 	, m_start_at_position(p_start_at_position)
@@ -61,6 +67,9 @@ playback_properties::playback_properties(
 	, m_buffer_size(p_buffer_size)
 	, m_low_buffer_threshold(p_low_buffer_threshold)
 	, m_high_buffer_threshold(p_high_buffer_threshold)
+	, m_jitter_buffer_length(p_jitter_buffer_length)
+	, m_do_retransmissions(p_do_retransmissions)
+	, m_allowed_transports(p_allowed_transports)
 {
 }
 
